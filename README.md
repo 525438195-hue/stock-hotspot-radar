@@ -406,13 +406,12 @@ streamlit run app.py
 
 看板支持按题材、可信度分数、验证状态、风险标签筛选，也支持只看“优先跟踪”和隐藏“暂不参与 / 直接排除”。页面每 5 分钟自动刷新显示结果，但不会因为页面刷新而重复请求 Tavily。
 
-打开网页时，程序会先检查 `outputs/report_state.json`：
+打开网页时，程序默认优先读取本地缓存，不会自动请求 Tavily。只有点击“立即刷新今日数据”时，才会重新联网刷新热点和自选股情报。
 
 ```text
-如果状态文件不存在，自动执行一次 auto 模式
-如果 last_update_time 不是今天，自动执行一次 auto 模式
-如果 last_update_time 是今天，直接读取缓存
-点击“立即刷新今日数据”时，才强制重新联网刷新
+如果已有 outputs/report_state.json，直接读取缓存
+如果已有 outputs/stock_candidates.csv，直接展示观察池
+点击“立即刷新今日数据”时，才执行 auto 模式和自选股情报监控
 ```
 
 看板按钮：
@@ -423,6 +422,31 @@ streamlit run app.py
 导出观察池：下载 outputs/stock_candidates.csv
 查看原始日报：展开 outputs/daily_report.md
 ```
+
+### 我的自选股
+
+“我的自选股”页面支持直接维护 `data/watchlist.csv`：
+
+```text
+添加自选股：填写股票名称、股票代码、所属题材、关注级别、持仓状态、成本价和备注
+编辑自选股表格：支持新增行、修改行和删除行
+保存自选股列表：写入 data/watchlist.csv，但不会自动联网检索
+删除自选股：按股票代码删除记录
+```
+
+当前默认使用 CSV 存储：
+
+```env
+WATCHLIST_STORAGE=csv
+```
+
+如果后续要切换到 Google Sheets，可以预留：
+
+```env
+WATCHLIST_STORAGE=google_sheets
+```
+
+当前版本尚未接入 Google Sheets 写入接口，设置为 `google_sheets` 时页面会提示先使用 CSV 模式。Streamlit Cloud 上使用 CSV 存储时，本地文件不保证持久化，建议后续切换到 Google Sheets 存储。
 
 ## Streamlit Community Cloud 部署
 
@@ -436,6 +460,7 @@ streamlit run app.py
 
 ```toml
 TAVILY_API_KEY = "xxx"
+WATCHLIST_STORAGE = "csv"
 ```
 
 6. Deploy。

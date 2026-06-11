@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 
@@ -27,7 +28,19 @@ from main import run_pipeline as run_data_pipeline  # noqa: E402
 from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_secrets  # noqa: E402
 from stock_candidate_builder import POSITIVE_SUGGESTIONS, build_stock_candidates  # noqa: E402
 from time_utils import format_publish_time  # noqa: E402
-from watchlist_monitor import ensure_watchlist_template, run_watchlist_monitor  # noqa: E402
+from watchlist_monitor import run_watchlist_monitor  # noqa: E402
+from watchlist_store import (  # noqa: E402
+    LEVEL_OPTIONS,
+    POSITION_OPTIONS,
+    WATCHLIST_FIELDS,
+    add_or_update_stock,
+    csv_cloud_warning,
+    delete_stock,
+    get_storage_mode,
+    google_sheets_message,
+    load_watchlist as load_watchlist_store,
+    save_watchlist,
+)
 
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -77,7 +90,7 @@ def load_state() -> dict[str, Any]:
 def ensure_runtime_dirs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    ensure_watchlist_template(WATCHLIST_DATA_PATH)
+    load_watchlist_store(PROJECT_ROOT)
 
 
 def has_tavily_key() -> bool:
@@ -720,8 +733,104 @@ def render_filtered_search_results() -> None:
         st.dataframe(_select_columns(filtered, columns), use_container_width=True, hide_index=True)
 
 
+def render_watchlist_management() -> pd.DataFrame:
+    st.markdown("## 自选股管理")
+    notice = st.session_state.pop("watchlist_save_notice", "")
+    if notice:
+        st.success(notice)
+        st.info("自选股已保存。点击“立即刷新今日数据”后才会检索新闻。")
+
+    storage_mode = get_storage_mode(PROJECT_ROOT)
+    if storage_mode == "google_sheets":
+        st.warning(google_sheets_message())
+        return pd.DataFrame(columns=WATCHLIST_FIELDS)
+    warning = csv_cloud_warning(PROJECT_ROOT)
+    if warning:
+        st.warning(warning)
+
+    current_df = load_watchlist_store(PROJECT_ROOT)
+    _render_add_watchlist_form()
+    st.markdown("### 编辑自选股表格")
+    edited_df = st.data_editor(
+        current_df,
+        key="watchlist_editor",
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "关注级别": st.column_config.SelectboxColumn("关注级别", options=LEVEL_OPTIONS),
+            "持仓状态": st.column_config.SelectboxColumn("持仓状态", options=POSITION_OPTIONS),
+            "成本价": st.column_config.TextColumn("成本价"),
+            "备注": st.column_config.TextColumn("备注"),
+        },
+    )
+    cols = st.columns([1, 1, 4])
+    if cols[0].button("保存自选股列表", type="primary", use_container_width=True):
+        result = save_watchlist(edited_df, PROJECT_ROOT)
+        _handle_watchlist_store_result(result)
+    _render_delete_watchlist_form(current_df)
+    return load_watchlist_store(PROJECT_ROOT)
+
+
+def _render_add_watchlist_form() -> None:
+    st.markdown("### 添加自选股")
+    with st.form("add_watchlist_stock", clear_on_submit=True):
+        cols = st.columns([1.2, 1, 1.2, 0.8, 0.9, 0.8])
+        name = cols[0].text_input("股票名称", placeholder="例如：比亚迪")
+        code = cols[1].text_input("股票代码", placeholder="例如：002594", max_chars=6)
+        topic = cols[2].text_input("所属题材", placeholder="例如：新能源/军工")
+        level = cols[3].selectbox("关注级别", LEVEL_OPTIONS, index=1)
+        position = cols[4].selectbox("持仓状态", POSITION_OPTIONS, index=1)
+        cost = cols[5].text_input("成本价", placeholder="可留空")
+        note = st.text_area("备注", placeholder="记录你关注的催化、公告或风险点", height=80)
+        submitted = st.form_submit_button("添加 / 更新自选股", type="primary")
+    if submitted:
+        result = add_or_update_stock(
+            {
+                "股票名称": name,
+                "股票代码": code,
+                "所属题材": topic,
+                "关注级别": level,
+                "持仓状态": position,
+                "成本价": cost,
+                "备注": note,
+            },
+            PROJECT_ROOT,
+        )
+        _handle_watchlist_store_result(result)
+
+
+def _render_delete_watchlist_form(current_df: pd.DataFrame) -> None:
+    if current_df.empty:
+        return
+    options: dict[str, str] = {}
+    for _, row in current_df.fillna("").astype(str).iterrows():
+        code = row.get("股票代码", "").strip()
+        name = row.get("股票名称", "").strip()
+        if code:
+            options[f"{name} {code}"] = code
+    if not options:
+        return
+    with st.form("delete_watchlist_stock"):
+        selected = st.selectbox("删除自选股", list(options.keys()))
+        submitted = st.form_submit_button("删除选中自选股")
+    if submitted:
+        result = delete_stock(options[selected], PROJECT_ROOT)
+        _handle_watchlist_store_result(result)
+
+
+def _handle_watchlist_store_result(result: Any) -> None:
+    if result.success:
+        st.cache_data.clear()
+        st.session_state["watchlist_save_notice"] = result.message
+        st.rerun()
+    for error in result.errors or [result.message]:
+        st.error(error)
+
+
 def render_watchlist_page(state: dict[str, Any]) -> None:
-    watchlist_rows = cached_csv_rows(WATCHLIST_DATA_PATH)
+    watchlist_df = render_watchlist_management()
+    watchlist_rows = _dataframe_rows(watchlist_df)
     review_rows = cached_csv_rows(WATCHLIST_REVIEW_PATH)
     news_rows = [row for row in cached_csv_rows(WATCHLIST_NEWS_PATH) if row.get("是否保留") == "是"]
     if not watchlist_rows:
@@ -797,6 +906,13 @@ def _render_watchlist_news_group(message_type: str, rows: list[dict[str, str]]) 
         )
     except Exception:
         st.dataframe(display_rows, use_container_width=True, hide_index=True)
+
+
+def _dataframe_rows(df: pd.DataFrame) -> list[dict[str, str]]:
+    if df.empty:
+        return []
+    rows = df.fillna("").astype(str).to_dict(orient="records")
+    return [{key: _sanitize_text(value) for key, value in row.items()} for row in rows]
 
 
 def _watchlist_key(row: dict[str, str]) -> str:
@@ -899,6 +1015,8 @@ def _sanitize_row(row: dict[str, str]) -> dict[str, str]:
 
 def _sanitize_text(text: object) -> str:
     value = str(text or "")
+    sold_status_token = "__WATCHLIST_SOLD_STATUS__"
+    value = value.replace("已卖出", sold_status_token)
     replacements = {
         "买入": "观察",
         "卖出": "降低权重",
@@ -911,6 +1029,7 @@ def _sanitize_text(text: object) -> str:
     }
     for forbidden, replacement in replacements.items():
         value = value.replace(forbidden, replacement)
+    value = value.replace(sold_status_token, "已卖出")
     return value
 
 
