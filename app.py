@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
 import os
@@ -69,6 +70,248 @@ MAIN_COLUMNS = [
 ]
 FORBIDDEN_TERMS = ["买入", "卖出", "推荐买", "满仓", "梭哈", "必涨", "明天涨停", "稳赚"]
 SUGGESTION_ORDER = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
+
+
+def inject_global_css() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --radar-bg: #F6F8FB;
+            --radar-card: #FFFFFF;
+            --radar-text: #1F2937;
+            --radar-muted: #6B7280;
+            --radar-primary: #2563EB;
+            --radar-risk: #EF4444;
+            --radar-success: #10B981;
+            --radar-warning: #F59E0B;
+            --radar-border: #E5E7EB;
+        }
+        .stApp { background: var(--radar-bg); color: var(--radar-text); }
+        .block-container {
+            max-width: 1180px;
+            padding: 1.25rem 1.25rem 3rem;
+            margin: 0 auto;
+        }
+        section[data-testid="stSidebar"] {
+            background: #FFFFFF;
+            border-right: 1px solid var(--radar-border);
+        }
+        div[data-testid="stTabs"] button {
+            border-radius: 999px;
+            color: var(--radar-muted);
+            font-weight: 650;
+        }
+        div[data-testid="stTabs"] button[aria-selected="true"] {
+            color: var(--radar-primary);
+        }
+        .stButton > button,
+        .stDownloadButton > button,
+        div[data-testid="stFormSubmitButton"] button {
+            border-radius: 10px !important;
+            font-weight: 650 !important;
+            border: 1px solid #D1D5DB !important;
+            box-shadow: none !important;
+        }
+        .stButton > button[kind="primary"],
+        div[data-testid="stFormSubmitButton"] button[kind="primary"] {
+            background: var(--radar-primary) !important;
+            color: #FFFFFF !important;
+            border-color: var(--radar-primary) !important;
+        }
+        div[data-testid="stDataFrame"],
+        div[data-testid="stTable"] {
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--radar-border);
+            background: #FFFFFF;
+        }
+        .radar-hero {
+            background: linear-gradient(135deg, #FFFFFF 0%, #EFF6FF 100%);
+            border: 1px solid #DBEAFE;
+            border-radius: 16px;
+            box-shadow: 0 12px 30px rgba(37, 99, 235, 0.08);
+            padding: 28px;
+            margin-bottom: 18px;
+        }
+        .radar-hero h1 {
+            color: var(--radar-text);
+            font-size: 2rem;
+            line-height: 1.15;
+            margin: 0 0 8px;
+            letter-spacing: 0;
+        }
+        .radar-hero p {
+            color: var(--radar-muted);
+            font-size: 1rem;
+            margin: 0 0 16px;
+        }
+        .radar-pill-row,
+        .radar-badge-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+        .radar-badge,
+        .radar-pill {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            max-width: 100%;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .radar-pill { padding: 6px 12px; }
+        .badge-blue, .pill-blue { background: #DBEAFE; color: #1D4ED8; }
+        .badge-green, .pill-green { background: #D1FAE5; color: #047857; }
+        .badge-red, .pill-red { background: #FEE2E2; color: #B91C1C; }
+        .badge-orange, .pill-orange { background: #FEF3C7; color: #B45309; }
+        .badge-gray, .pill-gray { background: #F3F4F6; color: #4B5563; }
+        .radar-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin: 12px 0 18px;
+        }
+        .radar-metric-card,
+        .radar-card,
+        .radar-empty-card,
+        .news-card,
+        .watch-card {
+            background: var(--radar-card);
+            border: 1px solid var(--radar-border);
+            border-radius: 16px;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+        }
+        .radar-metric-card {
+            padding: 16px;
+            min-height: 118px;
+        }
+        .metric-top {
+            display: flex;
+            justify-content: space-between;
+            color: var(--radar-muted);
+            font-size: 0.82rem;
+            gap: 8px;
+        }
+        .metric-value {
+            color: var(--radar-text);
+            font-size: 1.65rem;
+            font-weight: 800;
+            line-height: 1.15;
+            margin: 10px 0 6px;
+            word-break: break-word;
+        }
+        .metric-desc {
+            color: var(--radar-muted);
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }
+        .radar-empty-card {
+            padding: 22px;
+            color: var(--radar-muted);
+            margin: 8px 0 14px;
+        }
+        .radar-empty-card strong {
+            display: block;
+            color: var(--radar-text);
+            font-size: 1.05rem;
+            margin-bottom: 6px;
+        }
+        .news-card,
+        .watch-card {
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .news-title,
+        .watch-title {
+            color: var(--radar-text);
+            font-weight: 800;
+            font-size: 1rem;
+            line-height: 1.45;
+            margin-bottom: 10px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .watch-title { font-size: 1.08rem; }
+        .news-meta,
+        .watch-meta {
+            color: var(--radar-muted);
+            font-size: 0.84rem;
+            line-height: 1.55;
+            margin: 8px 0;
+        }
+        .watch-counts {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+            margin: 12px 0;
+        }
+        .watch-count {
+            background: #F9FAFB;
+            border-radius: 12px;
+            padding: 8px;
+            text-align: center;
+            color: var(--radar-muted);
+            font-size: 0.76rem;
+        }
+        .watch-count strong {
+            display: block;
+            color: var(--radar-text);
+            font-size: 1.05rem;
+        }
+        .card-link {
+            color: var(--radar-primary);
+            font-weight: 750;
+            text-decoration: none;
+        }
+        .section-card {
+            background: #FFFFFF;
+            border: 1px solid var(--radar-border);
+            border-radius: 16px;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        @media (max-width: 768px) {
+            .block-container {
+                padding: 0.85rem 0.7rem 2rem;
+                max-width: 100%;
+            }
+            .radar-hero {
+                padding: 20px 16px;
+                border-radius: 14px;
+            }
+            .radar-hero h1 { font-size: 1.55rem; }
+            .radar-hero p { font-size: 0.92rem; }
+            .radar-metric-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+            }
+            .radar-metric-card { min-height: 102px; padding: 13px; }
+            .metric-value { font-size: 1.28rem; }
+            .watch-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            section[data-testid="stSidebar"] {
+                width: min(88vw, 320px) !important;
+            }
+            div[data-testid="stDataFrame"] {
+                overflow-x: auto;
+            }
+        }
+        @media (max-width: 460px) {
+            .radar-metric-grid { grid-template-columns: 1fr; }
+            .radar-badge, .radar-pill { white-space: normal; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def load_state() -> dict[str, Any]:
@@ -415,20 +658,58 @@ def _cache_status_text() -> str:
     return "是" if value else "否"
 
 
-def render_header(state: dict[str, Any], candidates: list[dict[str, str]], risk_rows: list[dict[str, str]]) -> None:
-    st.title("A股热点个股雷达")
-    st.caption("仅生成热点观察池，不构成买卖建议，不自动下单。")
-    cols = st.columns(4)
-    cols[0].metric("Tavily Key 是否读取", "是" if has_tavily_key() else "否")
-    cols[1].metric("今日数据是否生成", "是" if today_data_generated(state) else "否")
-    cols[2].metric("上次刷新时间", str(state.get("last_update_time", "暂无")))
-    cols[3].metric("上次刷新耗时", _last_refresh_seconds(state))
+def render_header(
+    state: dict[str, Any],
+    candidates: list[dict[str, str]],
+    risk_rows: list[dict[str, str]],
+    *,
+    tavily_ready: bool,
+    data_ready: bool,
+) -> None:
+    status_html = "".join(
+        [
+            _pill("Tavily 已连接" if tavily_ready else "Tavily 未连接", "green" if tavily_ready else "orange"),
+            _pill("今日已刷新" if data_ready else "今日未刷新", "green" if data_ready else "gray"),
+            _pill("使用缓存" if _cache_status_text() == "是" else "实时刷新", "blue" if _cache_status_text() == "是" else "orange"),
+        ]
+    )
+    st.markdown(
+        f"""
+        <div class="radar-hero">
+            <h1>A股热点个股雷达</h1>
+            <p>热点观察 / 自选股情报 / 风险提示，仅供复盘和观察，不构成买卖建议。</p>
+            <div class="radar-pill-row">{status_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    watchlist_count = len(load_watchlist_store(PROJECT_ROOT))
+    risk_count = len(risk_rows) + int(state.get("watchlist_risk_count", 0) or 0)
+    render_metric_cards(
+        [
+            ("今日热点新闻数量", str(_hot_news_count()), "保留新闻与高质量新闻", "N"),
+            ("个股候选数量", str(_stock_candidate_count(candidates, state)), "来自观察池候选", "S"),
+            ("自选股数量", str(watchlist_count), "我的自选股列表", "W"),
+            ("风险提示数量", str(risk_count), "公告与自选股风险", "R"),
+            ("上次刷新时间", str(state.get("last_update_time", "暂无")), "缓存状态用于页面展示", "T"),
+            ("上次刷新耗时", _last_refresh_seconds(state), "最近一次刷新流程耗时", "Z"),
+        ]
+    )
 
-    cols2 = st.columns(4)
-    cols2[0].metric("本次是否使用缓存", _cache_status_text())
-    cols2[1].metric("今日热点新闻数量", _hot_news_count())
-    cols2[2].metric("个股候选数量", _stock_candidate_count(candidates, state))
-    cols2[3].metric("高质量新闻数量", int(state.get("high_quality_news_count", 0) or 0))
+
+def render_metric_cards(items: list[tuple[str, str, str, str]]) -> None:
+    cards = []
+    for title, value, desc, icon in items:
+        cards.append(
+            f"""
+            <div class="radar-metric-card">
+                <div class="metric-top"><span>{_escape(title)}</span><span>{_escape(icon)}</span></div>
+                <div class="metric-value">{_escape(value)}</div>
+                <div class="metric-desc">{_escape(desc)}</div>
+            </div>
+            """
+        )
+    st.markdown(f"<div class=\"radar-metric-grid\">{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
 def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
@@ -480,7 +761,7 @@ def render_source_status(state: dict[str, Any], candidates: list[dict[str, str]]
 def render_actions() -> None:
     cols = st.columns(4)
     with cols[0]:
-        if st.button("立即刷新今日数据", use_container_width=True):
+        if st.button("立即刷新今日数据", type="primary", use_container_width=True):
             start = time.perf_counter()
             progress = st.progress(0)
             with st.status("正在刷新今日数据...", expanded=True) as status:
@@ -564,7 +845,7 @@ def render_focus_table(rows: list[dict[str, str]]) -> None:
     st.subheader("今日重点观察股")
     focus = [row for row in rows if row.get("候选类型") in {"个股", "个股待补代码"} and row.get("观察建议") in POSITIVE_SUGGESTIONS]
     if not focus:
-        st.info("今日暂无明确个股观察池，但已生成题材观察和新闻总结。")
+        render_empty_state("今日暂无观察股", "暂未识别到明确个股，题材观察和新闻总结仍可用于人工复盘。")
         return
     risky_count = sum(1 for row in focus if row.get("风险标签", "无") not in {"", "无"})
     if risky_count:
@@ -616,9 +897,10 @@ def render_hot_news() -> None:
         if row.get("是否保留") == "是" or row.get("结果类型") == "高质量新闻"
     ]
     if not rows:
-        st.info("暂无保留新闻，请检查 Tavily Key 或云端运行状态。")
+        render_empty_state("暂无热点新闻", "当前缓存里没有保留新闻，请检查 Tavily Key、数据源状态或稍后刷新。")
         return
     rows.sort(key=lambda row: (_score({"可信度分数": row.get("A股相关性分数", "0")}) * -1, row.get("题材", "")))
+    render_news_cards(rows[:12])
     display_rows = []
     for row in rows[:80]:
         display_rows.append(
@@ -631,15 +913,47 @@ def render_hot_news() -> None:
                 "原始链接": row.get("原始链接", ""),
             }
         )
-    try:
-        st.dataframe(
-            display_rows,
-            use_container_width=True,
-            hide_index=True,
-            column_config={"原始链接": st.column_config.LinkColumn("原始链接", display_text="查看原文")},
-        )
-    except Exception:
-        st.dataframe(display_rows, use_container_width=True, hide_index=True)
+    with st.expander("新闻明细表", expanded=False):
+        try:
+            st.dataframe(
+                display_rows,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"原始链接": st.column_config.LinkColumn("原始链接", display_text="查看原文")},
+            )
+        except Exception:
+            st.dataframe(display_rows, use_container_width=True, hide_index=True)
+
+
+def render_news_cards(rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+    for index in range(0, len(rows), 2):
+        cols = st.columns(2)
+        for col, row in zip(cols, rows[index : index + 2]):
+            with col:
+                title = _compact_text(row.get("标题", ""), 62)
+                source = row.get("来源", "") or "未知来源"
+                topic = row.get("题材", "") or "未识别题材"
+                publish_time = row.get("发布时间_北京时间") or format_publish_time(row.get("发布时间", ""))
+                score = row.get("A股相关性分数", "")
+                url = row.get("原始链接", "")
+                link = f'<a class="card-link" href="{_escape_attr(url)}" target="_blank">查看原文</a>' if url else ""
+                st.markdown(
+                    f"""
+                    <div class="news-card">
+                        <div class="news-title">{_escape(title)}</div>
+                        <div class="radar-badge-row">
+                            {_badge(source, "blue")}
+                            {_badge(topic, "gray")}
+                            {_badge(f"A股相关性 {score}", "green" if _score({"可信度分数": score}) >= 70 else "orange")}
+                        </div>
+                        <div class="news-meta">发布时间：{_escape(publish_time or "时间未知")}</div>
+                        {link}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def render_news_summary() -> None:
@@ -734,12 +1048,6 @@ def render_filtered_search_results() -> None:
 
 
 def render_watchlist_management() -> pd.DataFrame:
-    st.markdown("## 自选股管理")
-    notice = st.session_state.pop("watchlist_save_notice", "")
-    if notice:
-        st.success(notice)
-        st.info("自选股已保存。点击“立即刷新今日数据”后才会检索新闻。")
-
     storage_mode = get_storage_mode(PROJECT_ROOT)
     if storage_mode == "google_sheets":
         st.warning(google_sheets_message())
@@ -829,57 +1137,119 @@ def _handle_watchlist_store_result(result: Any) -> None:
 
 
 def render_watchlist_page(state: dict[str, Any]) -> None:
-    watchlist_df = render_watchlist_management()
+    st.subheader("我的自选股")
+    notice = st.session_state.pop("watchlist_save_notice", "")
+    if notice:
+        st.success(notice)
+        st.info("自选股已保存。点击“立即刷新今日数据”后才会检索新闻。")
+    watchlist_df = load_watchlist_store(PROJECT_ROOT)
     watchlist_rows = _dataframe_rows(watchlist_df)
     review_rows = cached_csv_rows(WATCHLIST_REVIEW_PATH)
     news_rows = [row for row in cached_csv_rows(WATCHLIST_NEWS_PATH) if row.get("是否保留") == "是"]
+    _render_watchlist_summary(watchlist_rows, review_rows, state)
     if not watchlist_rows:
-        st.info("暂无自选股，请先在 data/watchlist.csv 中添加股票。")
-        return
-
-    cols = st.columns(5)
-    cols[0].metric("自选股数量", len(watchlist_rows))
-    cols[1].metric("今日有新消息数量", len([row for row in review_rows if row.get("情报状态") in {"有新消息", "有风险", "仅有传闻"}]))
-    cols[2].metric("风险提示数量", sum(_int_text(row.get("风险数量")) for row in review_rows))
-    cols[3].metric("传闻数量", sum(_int_text(row.get("传闻数量")) for row in review_rows))
-    cols[4].metric("上次刷新时间", state.get("watchlist_last_update_time") or _latest_value([row.get("更新时间", "") for row in review_rows]) or "暂无")
-
-    if not review_rows:
-        st.info("已读取自选股，但尚未生成情报。请点击“立即刷新今日数据”。")
+        render_empty_state("暂无自选股情报", "暂无自选股，请在下方添加股票后保存。保存不会自动联网检索。")
+        with st.expander("添加 / 编辑自选股", expanded=True):
+            render_watchlist_management()
         return
 
     news_by_stock: dict[str, list[dict[str, str]]] = {}
     for row in news_rows:
         news_by_stock.setdefault(_watchlist_key(row), []).append(row)
+    review_by_stock = {_watchlist_key(row): row for row in review_rows}
 
-    for row in review_rows:
-        with st.container(border=True):
-            title = f"{row.get('股票名称', '')} {row.get('股票代码', '')}"
-            st.markdown(f"### {title}")
-            cols_card = st.columns([1.5, 1, 1, 2])
-            cols_card[0].write(f"所属题材：{row.get('所属题材', '') or '未填写'}")
-            cols_card[1].write(f"持仓状态：{row.get('持仓状态', '') or '未填写'}")
-            cols_card[2].write(f"规则观察建议：{row.get('规则观察建议', '')}")
-            cols_card[3].write(
-                f"新闻 {row.get('新闻数量', '0')} / 公告 {row.get('公告数量', '0')} / "
-                f"传闻 {row.get('传闻数量', '0')} / 风险 {row.get('风险数量', '0')}"
-            )
-            latest = row.get("最新消息标题", "") or "暂无新消息"
-            st.write(f"最新消息：{_compact_text(latest, 70)}")
-            risk_text = row.get("风险提示", "") or "无"
-            if risk_text != "无":
-                st.warning(f"风险提示：{risk_text}")
-            else:
-                st.caption("风险提示：无")
-            with st.expander("查看详细情报", expanded=False):
-                st.write(f"核心理由：{row.get('核心理由', '')}")
-                st.write(f"观察条件：{row.get('观察条件', '')}")
-                st.write(f"放弃条件：{row.get('放弃条件', '')}")
-                stock_news = news_by_stock.get(_watchlist_key(row), [])
-                if not stock_news:
-                    st.info("暂无保留消息。")
-                for message_type in ["正式新闻", "公告信息", "社媒传闻", "风险消息", "行情异动"]:
-                    _render_watchlist_news_group(message_type, stock_news)
+    render_watchlist_cards(watchlist_rows, review_by_stock, news_by_stock)
+
+    with st.expander("添加 / 编辑自选股", expanded=False):
+        render_watchlist_management()
+
+    with st.expander("自选股明细表", expanded=False):
+        st.dataframe(_watchlist_table_rows(watchlist_rows), use_container_width=True, hide_index=True)
+
+
+def _render_watchlist_summary(watchlist_rows: list[dict[str, str]], review_rows: list[dict[str, str]], state: dict[str, Any]) -> None:
+    render_metric_cards(
+        [
+            ("自选股数量", str(len(watchlist_rows)), "当前维护的股票", "W"),
+            ("今日有新消息", str(len([row for row in review_rows if row.get("情报状态") in {"有新消息", "有风险", "仅有传闻"}])), "正式新闻、风险或传闻", "N"),
+            ("风险提示数量", str(sum(_int_text(row.get("风险数量")) for row in review_rows)), "需人工复核", "R"),
+            ("传闻数量", str(sum(_int_text(row.get("传闻数量")) for row in review_rows)), "未证实线索", "Q"),
+            ("上次刷新时间", state.get("watchlist_last_update_time") or _latest_value([row.get("更新时间", "") for row in review_rows]) or "暂无", "自选股情报刷新", "T"),
+            ("存储模式", get_storage_mode(PROJECT_ROOT), "当前自选股存储", "D"),
+        ]
+    )
+
+
+def render_watchlist_cards(
+    watchlist_rows: list[dict[str, str]],
+    review_by_stock: dict[str, dict[str, str]],
+    news_by_stock: dict[str, list[dict[str, str]]],
+) -> None:
+    for index in range(0, len(watchlist_rows), 2):
+        cols = st.columns(2)
+        for col, watch_row in zip(cols, watchlist_rows[index : index + 2]):
+            review = review_by_stock.get(_watchlist_key(watch_row), {})
+            stock_news = news_by_stock.get(_watchlist_key(watch_row), [])
+            with col:
+                _render_watchlist_card(watch_row, review)
+                with st.expander("查看详细情报", expanded=False):
+                    if not review:
+                        st.info("已加入自选股，等待下次刷新生成情报。")
+                    else:
+                        st.write(f"核心理由：{review.get('核心理由', '')}")
+                        st.write(f"观察条件：{review.get('观察条件', '')}")
+                        st.write(f"放弃条件：{review.get('放弃条件', '')}")
+                    if not stock_news:
+                        st.info("暂无保留消息。")
+                    for message_type in ["正式新闻", "公告信息", "社媒传闻", "风险消息", "行情异动"]:
+                        _render_watchlist_news_group(message_type, stock_news)
+                st.caption("编辑自选股：在下方“添加 / 编辑自选股”中修改。")
+
+
+def _render_watchlist_card(watch_row: dict[str, str], review: dict[str, str]) -> None:
+    name = watch_row.get("股票名称", "未命名")
+    code = watch_row.get("股票代码", "")
+    topic = watch_row.get("所属题材", "") or "未填写题材"
+    level = watch_row.get("关注级别", "") or "未填写"
+    position = watch_row.get("持仓状态", "") or "未填写"
+    cost = watch_row.get("成本价", "") or "未填写"
+    suggestion = review.get("规则观察建议", "等待刷新")
+    latest = review.get("最新消息标题") or "已加入自选股，等待下次刷新生成情报。"
+    risk_count = _int_text(review.get("风险数量", "0"))
+    risk_badge = _badge("风险" if risk_count else "无风险", "red" if risk_count else "green")
+    st.markdown(
+        f"""
+        <div class="watch-card">
+            <div class="watch-title">{_escape(name)} <span style="color:#6B7280;font-weight:700;">{_escape(code)}</span></div>
+            <div class="radar-badge-row">
+                {_badge(topic, "gray")}
+                {_badge(f"{level}关注" if level in LEVEL_OPTIONS else level, "orange" if level == "高" else "gray")}
+                {_badge(position, _position_badge_color(position))}
+                {risk_badge}
+            </div>
+            <div class="watch-counts">
+                <div class="watch-count"><strong>{_escape(review.get("新闻数量", "0"))}</strong>新闻</div>
+                <div class="watch-count"><strong>{_escape(review.get("公告数量", "0"))}</strong>公告</div>
+                <div class="watch-count"><strong>{_escape(review.get("传闻数量", "0"))}</strong>传闻</div>
+                <div class="watch-count"><strong>{_escape(review.get("风险数量", "0"))}</strong>风险</div>
+            </div>
+            <div class="watch-meta">成本价：{_escape(cost)}</div>
+            <div class="watch-meta">最新消息：{_escape(_compact_text(latest, 72))}</div>
+            <div class="radar-badge-row">{_badge(suggestion, _suggestion_badge_color(suggestion))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _watchlist_table_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    columns = ["股票名称", "股票代码", "所属题材", "关注级别", "持仓状态", "成本价", "备注"]
+    compact_rows = []
+    for row in rows:
+        item = {column: row.get(column, "") for column in columns}
+        item["备注"] = _compact_text(item.get("备注", ""), 30)
+        compact_rows.append(item)
+    return compact_rows
 
 
 def _render_watchlist_news_group(message_type: str, rows: list[dict[str, str]]) -> None:
@@ -974,6 +1344,60 @@ def _select_columns(rows: list[dict[str, str]], columns: list[str]) -> list[dict
     return [{column: row.get(column, "") for column in columns} for row in rows]
 
 
+def render_empty_state(title: str, body: str) -> None:
+    st.markdown(
+        f"""
+        <div class="radar-empty-card">
+            <strong>{_escape(title)}</strong>
+            <span>{_escape(body)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _badge(text: object, color: str = "gray") -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    return f'<span class="radar-badge badge-{_escape_attr(color)}">{_escape(value)}</span>'
+
+
+def _pill(text: object, color: str = "gray") -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    return f'<span class="radar-pill pill-{_escape_attr(color)}">{_escape(value)}</span>'
+
+
+def _position_badge_color(value: str) -> str:
+    if value == "持有":
+        return "blue"
+    if value == "观察":
+        return "gray"
+    if value == "已卖出":
+        return "gray"
+    return "gray"
+
+
+def _suggestion_badge_color(value: str) -> str:
+    if value in {"优先跟踪", "继续持有"}:
+        return "green"
+    if value in {"等待确认", "等待回踩", "只看核心"}:
+        return "orange"
+    if value in {"降低关注", "暂不参与", "直接排除"}:
+        return "red"
+    return "gray"
+
+
+def _escape(value: object) -> str:
+    return html.escape(str(value or ""), quote=False)
+
+
+def _escape_attr(value: object) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
 def _compact_text(value: object, max_len: int = 40) -> str:
     text = _dedupe_text(value)
     if len(text) <= max_len:
@@ -1035,6 +1459,7 @@ def _sanitize_text(text: object) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="A股热点个股雷达", layout="wide")
+    inject_global_css()
     st.markdown("<meta http-equiv='refresh' content='300'>", unsafe_allow_html=True)
     ensure_runtime_dirs()
     export_missing_env_from_runtime(PROJECT_ROOT)
@@ -1056,29 +1481,35 @@ def main() -> None:
     risk_rows = load_csv_rows(RISK_FLAGS_PATH)
     data_ready = today_data_generated(load_state())
 
-    render_header(state, all_candidates, risk_rows)
+    render_header(state, all_candidates, risk_rows, tavily_ready=tavily_ready, data_ready=data_ready)
     if show_refresh_timing:
         with st.expander("本次刷新耗时", expanded=True):
             _render_refresh_timing(state.get("refresh_timing", {}))
-    render_runtime_status(tavily_ready, data_ready)
     render_actions()
-    hotspot_tab, watchlist_tab = st.tabs(["热点雷达", "我的自选股"])
-    with hotspot_tab:
+    observe_tab, watchlist_tab, news_tab, theme_tab, risk_tab, status_tab = st.tabs(
+        ["今日观察", "我的自选股", "热点新闻", "题材排行", "风险排除", "数据状态"]
+    )
+    with observe_tab:
         render_focus_table(candidates)
+        render_theme_observation(candidates)
+    with watchlist_tab:
+        render_watchlist_page(load_state())
+    with news_tab:
         render_hot_news()
         render_news_summary()
-        render_theme_observation(candidates)
+    with theme_tab:
         render_theme_rank(candidates)
+        render_theme_observation(candidates)
+    with risk_tab:
         render_risk_section(risk_rows)
         render_excluded(candidates)
         render_rumors(candidates)
-        render_source_status(state, all_candidates)
         render_filtered_search_results()
         render_placeholder_debug(candidates)
+    with status_tab:
+        render_source_status(state, all_candidates)
         render_report()
         render_cloud_debug(tavily_ready)
-    with watchlist_tab:
-        render_watchlist_page(load_state())
 
 
 if __name__ == "__main__":
