@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import traceback
 import time
 from contextlib import redirect_stderr, redirect_stdout
@@ -72,8 +73,13 @@ FORBIDDEN_TERMS = ["买入", "卖出", "推荐买", "满仓", "梭哈", "必涨"
 SUGGESTION_ORDER = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
 
 
+def _render_html(html_string: str) -> None:
+    html_text = textwrap.dedent(html_string).strip()
+    st.markdown(html_text, unsafe_allow_html=True)
+
+
 def inject_global_css() -> None:
-    st.markdown(
+    _render_html(
         """
         <style>
         :root {
@@ -309,8 +315,7 @@ def inject_global_css() -> None:
             .radar-badge, .radar-pill { white-space: normal; }
         }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -673,15 +678,14 @@ def render_header(
             _pill("使用缓存" if _cache_status_text() == "是" else "实时刷新", "blue" if _cache_status_text() == "是" else "orange"),
         ]
     )
-    st.markdown(
+    _render_html(
         f"""
         <div class="radar-hero">
             <h1>A股热点个股雷达</h1>
             <p>热点观察 / 自选股情报 / 风险提示，仅供复盘和观察，不构成买卖建议。</p>
             <div class="radar-pill-row">{status_html}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
     watchlist_count = len(load_watchlist_store(PROJECT_ROOT))
     risk_count = len(risk_rows) + int(state.get("watchlist_risk_count", 0) or 0)
@@ -709,7 +713,7 @@ def render_metric_cards(items: list[tuple[str, str, str, str]]) -> None:
             </div>
             """
         )
-    st.markdown(f"<div class=\"radar-metric-grid\">{''.join(cards)}</div>", unsafe_allow_html=True)
+    _render_html(f"<div class=\"radar-metric-grid\">{''.join(cards)}</div>")
 
 
 def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
@@ -939,7 +943,7 @@ def render_news_cards(rows: list[dict[str, str]]) -> None:
                 score = row.get("A股相关性分数", "")
                 url = row.get("原始链接", "")
                 link = f'<a class="card-link" href="{_escape_attr(url)}" target="_blank">查看原文</a>' if url else ""
-                st.markdown(
+                _render_html(
                     f"""
                     <div class="news-card">
                         <div class="news-title">{_escape(title)}</div>
@@ -951,8 +955,7 @@ def render_news_cards(rows: list[dict[str, str]]) -> None:
                         <div class="news-meta">发布时间：{_escape(publish_time or "时间未知")}</div>
                         {link}
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
 
 
@@ -1217,7 +1220,7 @@ def _render_watchlist_card(watch_row: dict[str, str], review: dict[str, str]) ->
     latest = review.get("最新消息标题") or "已加入自选股，等待下次刷新生成情报。"
     risk_count = _int_text(review.get("风险数量", "0"))
     risk_badge = _badge("风险" if risk_count else "无风险", "red" if risk_count else "green")
-    st.markdown(
+    _render_html(
         f"""
         <div class="watch-card">
             <div class="watch-title">{_escape(name)} <span style="color:#6B7280;font-weight:700;">{_escape(code)}</span></div>
@@ -1237,8 +1240,7 @@ def _render_watchlist_card(watch_row: dict[str, str], review: dict[str, str]) ->
             <div class="watch-meta">最新消息：{_escape(_compact_text(latest, 72))}</div>
             <div class="radar-badge-row">{_badge(suggestion, _suggestion_badge_color(suggestion))}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -1345,14 +1347,13 @@ def _select_columns(rows: list[dict[str, str]], columns: list[str]) -> list[dict
 
 
 def render_empty_state(title: str, body: str) -> None:
-    st.markdown(
+    _render_html(
         f"""
         <div class="radar-empty-card">
             <strong>{_escape(title)}</strong>
             <span>{_escape(body)}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
