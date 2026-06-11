@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import subprocess
 import sys
+import traceback
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,8 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from secrets_manager import export_missing_env_from_runtime, runtime_secrets  # noqa: E402
+from main import run_pipeline as run_data_pipeline  # noqa: E402
+from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_secrets  # noqa: E402
 from stock_candidate_builder import POSITIVE_SUGGESTIONS, build_stock_candidates  # noqa: E402
 
 
@@ -73,13 +77,61 @@ def ensure_runtime_dirs() -> None:
 
 
 def has_tavily_key() -> bool:
-    return bool(runtime_secrets(PROJECT_ROOT).get("TAVILY_API_KEY", "").strip())
+    return bool(get_secret("TAVILY_API_KEY", PROJECT_ROOT).strip())
 
 
 def state_is_today(state: dict[str, Any]) -> bool:
     value = str(state.get("last_update_time", "") or "")
     today = datetime.now().strftime("%Y-%m-%d")
     return value.startswith(today)
+
+
+def csv_row_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as file:
+            return sum(1 for _ in csv.DictReader(file))
+    except Exception:
+        return 0
+
+
+def today_data_generated(state: dict[str, Any]) -> bool:
+    return (
+        state_is_today(state)
+        and STATE_PATH.exists()
+        and CANDIDATES_PATH.exists()
+        and SEARCH_DEDUPED_PATH.exists()
+        and csv_row_count(CANDIDATES_PATH) > 0
+    )
+
+
+def should_auto_refresh(state: dict[str, Any]) -> bool:
+    if not STATE_PATH.exists() or not CANDIDATES_PATH.exists() or not SEARCH_DEDUPED_PATH.exists():
+        return True
+    if not state_is_today(state):
+        return True
+    if has_tavily_key() and (csv_row_count(CANDIDATES_PATH) == 0 or int(state.get("raw_count", 0) or 0) == 0):
+        return True
+    return False
+
+
+def run_auto_mode() -> tuple[bool, str]:
+    export_missing_env_from_runtime(PROJECT_ROOT)
+    buffer = io.StringIO()
+    try:
+        with redirect_stdout(buffer), redirect_stderr(buffer):
+            run_data_pipeline("auto")
+        st.session_state["last_auto_error"] = ""
+        st.session_state["last_auto_log"] = buffer.getvalue()[-6000:]
+        return True, ""
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        log = buffer.getvalue()
+        trace = traceback.format_exc(limit=8)
+        st.session_state["last_auto_error"] = detail
+        st.session_state["last_auto_log"] = (log + "\n" + trace)[-6000:]
+        return False, detail
 
 
 def load_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -182,17 +234,25 @@ def render_header(state: dict[str, Any], candidates: list[dict[str, str]], risk_
     cols[4].metric("数据源成功率", f"{float(state.get('source_success_rate', 0) or 0) * 100:.0f}%")
 
 
+def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
+    last_error = str(st.session_state.get("last_auto_error", "") or "无")
+    cols = st.columns(3)
+    cols[0].metric("Tavily Key 是否已读取", "是" if tavily_ready else "否")
+    cols[1].metric("今日数据是否已生成", "是" if data_ready else "否")
+    cols[2].metric("最近一次错误原因", last_error[:80])
+
+
 def render_actions() -> None:
     cols = st.columns(4)
     with cols[0]:
         if st.button("立即刷新今日数据", use_container_width=True):
-            result = run_command(["src/main.py", "--mode", "auto"])
-            if result.returncode == 0:
+            ok, error = run_auto_mode()
+            if ok:
                 regenerate_candidates()
                 st.success("联网刷新完成，观察池已更新")
                 st.rerun()
             else:
-                st.error(result.stderr or result.stdout or "联网刷新失败")
+                st.error(f"联网刷新失败：{error}")
 
     with cols[1]:
         if st.button("重新生成观察池", use_container_width=True):
@@ -260,12 +320,18 @@ def render_theme_rank(rows: list[dict[str, str]]) -> None:
             }
         )
     ranking.sort(key=lambda item: _score({"可信度分数": str(_strength(best_by_topic.get(item["题材"], {}))) }), reverse=True)
-    st.dataframe(ranking, use_container_width=True, hide_index=True) if ranking else st.info("暂无题材热度数据。")
+    if ranking:
+        st.dataframe(ranking, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无题材热度数据。")
 
 
 def render_risk_section(risk_rows: list[dict[str, str]]) -> None:
     st.subheader("风险股票 / 风险公告")
-    st.dataframe(risk_rows, use_container_width=True, hide_index=True) if risk_rows else st.info("暂无风险公告。")
+    if risk_rows:
+        st.dataframe(risk_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无风险公告。")
 
 
 def render_excluded(rows: list[dict[str, str]]) -> None:
@@ -322,6 +388,23 @@ def render_report() -> None:
             st.info("暂无原始日报。")
 
 
+def render_cloud_debug(tavily_ready: bool) -> None:
+    with st.expander("云端运行状态", expanded=False):
+        rows = [
+            {"检查项": "是否读取到 TAVILY_API_KEY", "状态": "是" if tavily_ready else "否"},
+            {"检查项": "outputs 是否存在", "状态": "是" if OUTPUT_DIR.exists() else "否"},
+            {"检查项": "report_state.json 是否存在", "状态": "是" if STATE_PATH.exists() else "否"},
+            {"检查项": "stock_candidates.csv 行数", "状态": str(csv_row_count(CANDIDATES_PATH))},
+            {"检查项": "search_results_deduped.csv 行数", "状态": str(csv_row_count(SEARCH_DEDUPED_PATH))},
+            {"检查项": "最近一次 auto 模式错误", "状态": str(st.session_state.get("last_auto_error", "") or "无")},
+        ]
+        st.table(rows)
+        log = str(st.session_state.get("last_auto_log", "") or "")
+        if log:
+            st.caption("最近一次 auto 模式日志")
+            st.code(log[-4000:])
+
+
 def sort_candidates(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(rows, key=lambda row: (SUGGESTION_ORDER.get(row.get("观察建议", ""), 9), -_score(row), row.get("所属题材", "")))
 
@@ -374,27 +457,30 @@ def main() -> None:
     st.markdown("<meta http-equiv='refresh' content='300'>", unsafe_allow_html=True)
     ensure_runtime_dirs()
     export_missing_env_from_runtime(PROJECT_ROOT)
-    if not has_tavily_key():
+    tavily_ready = has_tavily_key()
+    if not tavily_ready:
         st.warning("当前未配置 Tavily API Key，无法联网搜索。")
 
     state = load_state()
-    if not state_is_today(state) and not st.session_state.get("auto_refresh_attempted", False):
+    if should_auto_refresh(state) and not st.session_state.get("auto_refresh_attempted", False):
         st.session_state["auto_refresh_attempted"] = True
         with st.spinner("正在自动刷新今日数据..."):
-            result = run_command(["src/main.py", "--mode", "auto"])
-        if result.returncode == 0:
+            ok, error = run_auto_mode()
+        if ok:
             st.success("今日数据已自动刷新。")
             state = load_state()
         else:
-            st.error(result.stderr or result.stdout or "自动刷新失败，请稍后重试。")
+            st.error(f"自动刷新失败：{error}")
 
     ensure_candidates()
 
     candidates = apply_sidebar_filters(load_csv_rows(CANDIDATES_PATH))
     all_candidates = sort_candidates(load_csv_rows(CANDIDATES_PATH))
     risk_rows = load_csv_rows(RISK_FLAGS_PATH)
+    data_ready = today_data_generated(load_state())
 
     render_header(state, all_candidates, risk_rows)
+    render_runtime_status(tavily_ready, data_ready)
     render_actions()
     render_focus_table(candidates)
     render_theme_observation(candidates)
@@ -405,6 +491,7 @@ def main() -> None:
     render_filtered_search_results()
     render_placeholder_debug(candidates)
     render_report()
+    render_cloud_debug(tavily_ready)
 
 
 if __name__ == "__main__":

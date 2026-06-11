@@ -57,6 +57,11 @@ def runtime_secret(project_root: Path, key: str, dotenv_values: dict[str, str] |
     return str((dotenv_values or load_dotenv_values(project_root)).get(key, "")).strip()
 
 
+def get_secret(key: str, project_root: Path | None = None) -> str:
+    root = project_root or Path(__file__).resolve().parents[1]
+    return runtime_secret(root, key)
+
+
 def runtime_secrets(project_root: Path) -> dict[str, str]:
     dotenv_values = load_dotenv_values(project_root)
     return {key: runtime_secret(project_root, key, dotenv_values) for key in SUPPORTED_SECRET_KEYS}
