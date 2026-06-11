@@ -1,4 +1,4 @@
-"""Build Chinese stock observation candidates from pipeline outputs."""
+"""Build stock and theme observation candidates from search results."""
 
 from __future__ import annotations
 
@@ -8,43 +8,29 @@ import re
 from pathlib import Path
 from typing import Any
 
+from stock_extractor import extract_stocks_from_text, is_placeholder_name, load_stock_code_map, stock_from_leading_name
+
 
 CANDIDATE_FIELDS = [
     "候选类型",
     "股票名称",
     "股票代码",
     "所属题材",
-    "题材阶段",
     "题材强度分",
     "可信度分数",
     "市场信号",
     "信息来源",
     "验证状态",
     "风险标签",
-    "观察条件",
     "观察建议",
+    "观察条件",
     "放弃条件",
+    "相关新闻标题",
+    "原始链接",
     "备注",
 ]
-
-MAJOR_RISKS = {"公司否认", "减持风险", "监管风险"}
-SOCIAL_HINTS = {"社媒情绪", "仅社媒消息", "未证实传闻"}
 POSITIVE_SUGGESTIONS = {"优先跟踪", "只看核心", "等待回踩"}
-PLACEHOLDER_NAMES = {"某某机器人", "某某科技", "某某航空", "某某股份", "某某公司"}
-TYPE_ORDER = {"个股": 0, "题材": 1, "占位": 2}
-INVALID_STOCK_NAME_PARTS = {
-    "今日",
-    "多股",
-    "人气股",
-    "概念股",
-    "产业链",
-    "全产业",
-    "再度",
-    "板块",
-    "上市公司",
-    "股票",
-    "A股",
-}
+MAJOR_RISKS = {"公司否认", "监管风险", "减持风险", "明确虚假消息"}
 FORBIDDEN_REPLACEMENTS = {
     "买入": "观察",
     "卖出": "降低权重",
@@ -63,51 +49,318 @@ def build_stock_candidates(
     market_data: dict[str, Any] | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    watchlist = _read_csv(output_dir / "watchlist.csv")
-    risk_flags = _read_csv(output_dir / "risk_flags.csv")
+    code_map = load_stock_code_map(data_dir / "a_stock_code_map.csv")
+    search_rows = _read_csv(output_dir / "search_results_deduped.csv")
+    risk_rows = _read_csv(output_dir / "risk_flags.csv")
     state = _read_json(output_dir / "report_state.json")
-    market_by_topic = _market_by_topic(market_data or _read_manual_market(data_dir / "manual_market.csv"))
-    risk_by_id = _risk_by_id(risk_flags)
+    market_rows = _market_rows(market_data, data_dir)
+    market_by_topic = {row.get("题材", ""): row for row in market_rows if row.get("题材")}
+    risk_text = "\n".join(" ".join(row.values()) for row in risk_rows)
 
-    rows = []
-    for item in watchlist:
-        topic = item.get("题材") or item.get("对应板块") or "未识别题材"
-        market = market_by_topic.get(topic, _market_from_watchlist(item))
-        risk_tags = _merge_risk_tags(item.get("风险标签", ""), risk_by_id.get(item.get("事件编号", ""), []))
-        score = _int(item.get("可信度分数"))
-        strength = _theme_strength(market)
-        suggestion = _suggestion(item, risk_tags, strength)
-        stock_name = _candidate_stock_name(item, market)
-        stock_code = _extract_stock_code(" ".join([stock_name, item.get("热点标题", ""), item.get("原始链接", "")]))
-        candidate_type = _candidate_type(stock_name, stock_code, topic)
-        rows.append(
-            {
-                "候选类型": candidate_type,
-                "股票名称": _sanitize(stock_name),
-                "股票代码": stock_code,
-                "所属题材": _sanitize(topic),
-                "题材阶段": _theme_stage(strength, _int(market.get("limit_up_count")), risk_tags),
-                "题材强度分": str(strength),
-                "可信度分数": str(score),
-                "市场信号": _sanitize(_market_signal_text(market)),
-                "信息来源": _sanitize(f"{item.get('来源', '')}（{item.get('来源类型', '')}）"),
-                "验证状态": _sanitize(item.get("验证状态", "")),
-                "风险标签": _sanitize(risk_tags or "无"),
-                "观察条件": _sanitize(_observation_condition(item, market, suggestion)),
-                "观察建议": suggestion,
-                "放弃条件": _sanitize(_abandon_condition(item, risk_tags, suggestion)),
-                "备注": _sanitize(_note(item, state, suggestion)),
-            }
-        )
+    candidates: list[dict[str, str]] = []
+    for row in search_rows:
+        if row.get("是否保留") != "是":
+            continue
+        topic = row.get("题材") or _topic_from_query(row.get("查询词", "")) or "未识别题材"
+        result_type = row.get("结果类型") or "题材参考"
+        market = market_by_topic.get(topic, {})
+        text = f"{row.get('标题', '')}\n{row.get('摘要', '')}\n{row.get('来源', '')}"
+        stocks = extract_stocks_from_text(text, code_map)
+        if stocks and result_type == "高质量新闻":
+            for stock in stocks:
+                risk_tags = _risk_tags_for(stock.get("股票名称", ""), risk_text)
+                candidates.append(
+                    _candidate_row(
+                        candidate_type=stock.get("候选类型", "个股待补代码"),
+                        stock_name=stock.get("股票名称", ""),
+                        stock_code=stock.get("股票代码", ""),
+                        topic=topic,
+                        confidence=_confidence(row, result_type),
+                        strength=_theme_strength(market, row),
+                        market=market,
+                        source=row.get("来源", ""),
+                        verification="部分确认" if result_type == "高质量新闻" else "仅题材参考",
+                        risk_tags=risk_tags,
+                        news_title=row.get("标题", ""),
+                        url=row.get("原始链接", ""),
+                        result_type=result_type,
+                        state=state,
+                    )
+                )
+        else:
+            candidates.append(
+                _candidate_row(
+                    candidate_type="题材",
+                    stock_name="",
+                    stock_code="",
+                    topic=topic,
+                    confidence=_confidence(row, result_type),
+                    strength=_theme_strength(market, row),
+                    market=market,
+                    source=row.get("来源", ""),
+                    verification="题材参考" if result_type == "题材参考" else "部分确认",
+                    risk_tags="",
+                    news_title=row.get("标题", ""),
+                    url=row.get("原始链接", ""),
+                    result_type=result_type,
+                    state=state,
+                )
+            )
 
-    rows = _merge_duplicate_rows(rows)
-    rows.sort(key=_sort_key)
+    for market in market_rows:
+        topic = market.get("题材", "")
+        leading = stock_from_leading_name(market.get("领涨股票", ""), code_map)
+        if leading:
+            risk_tags = _risk_tags_for(leading.get("股票名称", ""), risk_text)
+            candidates.append(
+                _candidate_row(
+                    candidate_type=leading.get("候选类型", "个股待补代码"),
+                    stock_name=leading.get("股票名称", ""),
+                    stock_code=leading.get("股票代码", ""),
+                    topic=topic,
+                    confidence=62,
+                    strength=_theme_strength(market, {}),
+                    market=market,
+                    source="manual_market.csv",
+                    verification="仅有市场反应",
+                    risk_tags=risk_tags,
+                    news_title="",
+                    url="",
+                    result_type="行情补充",
+                    state=state,
+                )
+            )
+        elif topic and not any(row.get("所属题材") == topic for row in candidates):
+            candidates.append(
+                _candidate_row(
+                    candidate_type="题材",
+                    stock_name="",
+                    stock_code="",
+                    topic=topic,
+                    confidence=55,
+                    strength=_theme_strength(market, {}),
+                    market=market,
+                    source="manual_market.csv",
+                    verification="仅有市场反应",
+                    risk_tags="",
+                    news_title="",
+                    url="",
+                    result_type="行情补充",
+                    state=state,
+                )
+            )
+
+    candidates = _merge_duplicate_rows([row for row in candidates if row.get("候选类型") != "占位"])
+    candidates.sort(key=_sort_key)
     path = output_dir / "stock_candidates.csv"
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=CANDIDATE_FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{field: _sanitize(row.get(field, "")) for field in CANDIDATE_FIELDS} for row in candidates])
     return path
+
+
+def _candidate_row(
+    *,
+    candidate_type: str,
+    stock_name: str,
+    stock_code: str,
+    topic: str,
+    confidence: int,
+    strength: int,
+    market: dict[str, str],
+    source: str,
+    verification: str,
+    risk_tags: str,
+    news_title: str,
+    url: str,
+    result_type: str,
+    state: dict[str, Any],
+) -> dict[str, str]:
+    if is_placeholder_name(stock_name):
+        candidate_type = "占位"
+    suggestion = _suggestion(candidate_type, confidence, strength, risk_tags, result_type)
+    return {
+        "候选类型": candidate_type,
+        "股票名称": stock_name,
+        "股票代码": stock_code,
+        "所属题材": topic,
+        "题材强度分": str(strength),
+        "可信度分数": str(confidence),
+        "市场信号": _market_signal_text(market),
+        "信息来源": source,
+        "验证状态": verification,
+        "风险标签": risk_tags or "无",
+        "观察建议": suggestion,
+        "观察条件": _observation_condition(candidate_type, topic, stock_name, suggestion),
+        "放弃条件": _abandon_condition(risk_tags, suggestion),
+        "相关新闻标题": news_title,
+        "原始链接": url,
+        "备注": f"{result_type}；更新时间：{state.get('last_update_time', '暂无')}",
+    }
+
+
+def _suggestion(candidate_type: str, confidence: int, strength: int, risk_tags: str, result_type: str) -> str:
+    if any(risk in risk_tags for risk in MAJOR_RISKS):
+        return "直接排除"
+    if "只有社媒" in risk_tags or "未证实传闻" in risk_tags:
+        return "直接排除"
+    has_real_stock = candidate_type in {"个股", "个股待补代码"}
+    if has_real_stock and result_type == "高质量新闻" and strength >= 70 and confidence >= 70:
+        return "优先跟踪"
+    if has_real_stock and strength >= 60:
+        return "只看核心"
+    if has_real_stock and ("高位追涨风险" in risk_tags or strength >= 75):
+        return "等待回踩"
+    if candidate_type == "题材" and confidence >= 45:
+        return "暂不参与"
+    return "暂不参与"
+
+
+def _observation_condition(candidate_type: str, topic: str, stock_name: str, suggestion: str) -> str:
+    target = stock_name or topic
+    if suggestion == "优先跟踪":
+        return f"观察{target}是否继续获得高质量新闻、公告或资金验证，重点看题材持续性和风险公告"
+    if suggestion == "只看核心":
+        return f"只观察{topic}中来源清晰、流动性更好的核心标的，等待更多验证"
+    if suggestion == "等待回踩":
+        return f"等待{target}分歧、回踩和承接确认，不追逐情绪扩散"
+    if candidate_type == "题材":
+        return f"{topic}仅作为题材观察，等待明确上市公司、代码或公告线索"
+    return f"继续核验{target}与{topic}的关系"
+
+
+def _abandon_condition(risk_tags: str, suggestion: str) -> str:
+    if suggestion == "直接排除":
+        return "存在重大风险或事实冲突，不进入观察池"
+    return "出现公司否认、监管风险、减持风险，或题材新闻连续缺少新增验证"
+
+
+def _confidence(row: dict[str, str], result_type: str) -> int:
+    score = _int(row.get("A股相关性分数"))
+    if result_type == "高质量新闻":
+        return max(65, min(90, score))
+    if result_type == "题材参考":
+        return max(45, min(68, score))
+    return max(30, min(55, score))
+
+
+def _theme_strength(market: dict[str, str], row: dict[str, str]) -> int:
+    if market:
+        change = _number(market.get("板块涨幅"))
+        limit_up = _int(market.get("涨停数量"))
+        volume = _number(market.get("放量幅度"))
+        return max(0, min(100, int(round(change * 10 + limit_up * 4 + max(volume, 0) * 0.5))))
+    return max(30, min(70, _int(row.get("A股相关性分数"))))
+
+
+def _market_rows(market_data: dict[str, Any] | None, data_dir: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if market_data and market_data.get("sectors"):
+        for item in market_data.get("sectors", []):
+            rows.append(
+                {
+                    "题材": str(item.get("sector", "")),
+                    "板块涨幅": str(item.get("change_pct", "")),
+                    "涨停数量": str(item.get("limit_up_count", "")),
+                    "成交额": str(item.get("turnover_amount_billion", "")),
+                    "放量幅度": str(item.get("turnover_change_pct", "")),
+                    "领涨股票": str(item.get("leading_stock", "")),
+                }
+            )
+        return rows
+    for row in _read_csv(data_dir / "manual_market.csv"):
+        rows.append(
+            {
+                "题材": row.get("板块名称", ""),
+                "板块涨幅": row.get("板块涨幅", ""),
+                "涨停数量": row.get("涨停数量", ""),
+                "成交额": row.get("成交额", ""),
+                "放量幅度": row.get("放量幅度", ""),
+                "领涨股票": row.get("领涨股票", ""),
+            }
+        )
+    return rows
+
+
+def _market_signal_text(market: dict[str, str]) -> str:
+    if not market:
+        return "暂无行情验证"
+    return (
+        f"板块涨幅 {market.get('板块涨幅', '')}；"
+        f"涨停数量 {market.get('涨停数量', '')}；"
+        f"成交额 {market.get('成交额', '')}；"
+        f"放量幅度 {market.get('放量幅度', '')}"
+    )
+
+
+def _risk_tags_for(stock_name: str, risk_text: str) -> str:
+    if not stock_name or stock_name not in risk_text:
+        return ""
+    tags = [risk for risk in MAJOR_RISKS if risk in risk_text]
+    return "；".join(tags)
+
+
+def _merge_duplicate_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    grouped: dict[str, dict[str, str]] = {}
+    for row in rows:
+        key = _dedupe_key(row)
+        if key not in grouped:
+            grouped[key] = dict(row)
+        else:
+            grouped[key] = _merge_row(grouped[key], row)
+    return list(grouped.values())
+
+
+def _dedupe_key(row: dict[str, str]) -> str:
+    if row.get("候选类型") in {"个股", "个股待补代码"}:
+        if row.get("股票代码"):
+            return f"code:{row['股票代码']}"
+        return f"name:{row.get('股票名称', '')}"
+    return f"theme:{row.get('所属题材', '')}"
+
+
+def _merge_row(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
+    merged = dict(left)
+    for field in ["可信度分数", "题材强度分"]:
+        merged[field] = str(max(_int(left.get(field)), _int(right.get(field))))
+    for field in ["信息来源", "风险标签", "相关新闻标题", "原始链接", "备注"]:
+        merged[field] = _merge_text(left.get(field, ""), right.get(field, ""))
+    if _suggestion_rank(right.get("观察建议", "")) < _suggestion_rank(left.get("观察建议", "")):
+        merged["观察建议"] = right.get("观察建议", merged.get("观察建议", ""))
+        merged["观察条件"] = right.get("观察条件", merged.get("观察条件", ""))
+    if merged.get("候选类型") == "个股待补代码" and right.get("候选类型") == "个股":
+        merged["候选类型"] = "个股"
+        merged["股票代码"] = right.get("股票代码", "")
+    return merged
+
+
+def _merge_text(left: str, right: str) -> str:
+    values = []
+    for value in [left, right]:
+        for part in re.split(r"[；;|]+", str(value or "")):
+            text = part.strip()
+            if text and text not in values and text != "无":
+                values.append(text)
+    return "；".join(values[:4]) if values else "无"
+
+
+def _sort_key(row: dict[str, str]) -> tuple[int, int, int, str]:
+    type_order = {"个股": 0, "个股待补代码": 1, "题材": 2, "占位": 3}
+    suggestion_order = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
+    return (
+        type_order.get(row.get("候选类型", ""), 9),
+        suggestion_order.get(row.get("观察建议", ""), 9),
+        -_int(row.get("可信度分数")),
+        row.get("所属题材", ""),
+    )
+
+
+def _topic_from_query(query: str) -> str:
+    for topic in ["AI算力", "机器人", "低空经济", "半导体", "军工", "数据要素", "新能源", "消费电子", "医药", "证券"]:
+        if topic in str(query):
+            return topic
+    return str(query).split()[0] if query else ""
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -126,280 +379,8 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _read_manual_market(path: Path) -> dict[str, Any]:
-    rows = _read_csv(path)
-    sectors = []
-    for row in rows:
-        sectors.append(
-            {
-                "sector": row.get("板块名称", ""),
-                "change_pct": _number(row.get("板块涨幅")),
-                "limit_up_count": _int(row.get("涨停数量")),
-                "turnover_amount_billion": _number(row.get("成交额")),
-                "turnover_change_pct": _number(row.get("放量幅度")),
-                "leading_stock": row.get("领涨股票", ""),
-                "leading_stock_change_pct": _number(row.get("领涨股票涨幅")),
-            }
-        )
-    return {"sectors": sectors}
-
-
-def _market_by_topic(market_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {str(item.get("sector", "")): dict(item) for item in market_data.get("sectors", []) if item.get("sector")}
-
-
-def _market_from_watchlist(row: dict[str, str]) -> dict[str, Any]:
-    return {
-        "sector": row.get("对应板块") or row.get("题材", ""),
-        "change_pct": _number(row.get("板块涨幅")),
-        "limit_up_count": _int(row.get("涨停数量")),
-        "turnover_amount_billion": _number(row.get("成交额")),
-        "turnover_change_pct": _number(row.get("放量幅度")),
-        "leading_stock": "",
-        "leading_stock_change_pct": 0,
-    }
-
-
-def _risk_by_id(rows: list[dict[str, str]]) -> dict[str, list[str]]:
-    grouped: dict[str, list[str]] = {}
-    for row in rows:
-        key = row.get("编号", "")
-        risk = row.get("风险类型", "")
-        if key and risk:
-            grouped.setdefault(key, []).append(risk)
-    return grouped
-
-
-def _merge_risk_tags(existing: str, extra: list[str]) -> str:
-    tags = []
-    for value in [existing, *extra]:
-        for part in re.split(r"[；;、,，\s]+", value or ""):
-            part = part.strip()
-            if part and part != "无" and part not in tags:
-                tags.append(part)
-    return "；".join(tags)
-
-
-def _suggestion(row: dict[str, str], risk_tags: str, strength: int) -> str:
-    score = _int(row.get("可信度分数"))
-    status = row.get("验证状态", "")
-    source = row.get("来源类型", "")
-    limit_up = _int(row.get("涨停数量"))
-    has_major_risk = any(risk in risk_tags for risk in MAJOR_RISKS)
-    social_only = any(hint in source or hint in risk_tags or hint in status for hint in SOCIAL_HINTS)
-    reliable_or_market = source in {"财经媒体", "公司公告", "交易所公告", "政策文件", "行业媒体"} or strength >= 45
-
-    if score < 40 or social_only or has_major_risk or status == "被否定":
-        return "直接排除"
-    if score >= 75 and status in {"已确认", "部分确认"} and reliable_or_market and strength >= 65 and not risk_tags:
-        return "优先跟踪"
-    if score >= 65 and strength >= 70 and limit_up >= 6:
-        return "只看核心"
-    if score >= 55 and (strength >= 75 or "高位追涨风险" in risk_tags):
-        return "等待回踩"
-    if 40 <= score <= 54:
-        return "暂不参与"
-    return "暂不参与"
-
-
-def _candidate_stock_name(row: dict[str, str], market: dict[str, Any]) -> str:
-    title = row.get("热点标题", "")
-    source = row.get("来源", "")
-    extracted = _extract_stock_name(title)
-    if extracted:
-        return extracted
-    extracted = _extract_stock_name(source)
-    if extracted:
-        return extracted
-    leading = _clean_stock_name(str(market.get("leading_stock", "") or ""))
-    if leading:
-        return leading
-    return ""
-
-
-def _candidate_type(stock_name: str, stock_code: str, topic: str) -> str:
-    del topic
-    if _is_placeholder(stock_name):
-        return "占位"
-    if stock_name or stock_code:
-        return "个股"
-    return "题材"
-
-
-def _is_placeholder(stock_name: str) -> bool:
-    return "某某" in stock_name or stock_name in PLACEHOLDER_NAMES
-
-
-def _clean_stock_name(value: str) -> str:
-    text = value.strip()
-    text = re.sub(r"\b(?:000|001|002|003|300|301|600|601|603|605|688)\d{3}(?:\.(?:SZ|SH))?\b", "", text, flags=re.I)
-    text = re.sub(r"^(千亿|百亿|行业龙头|龙头|核心股|人气股|今日)", "", text)
-    text = re.sub(r"等.*$", "", text)
-    text = re.sub(r"(紧急|午后|今日|盘中)$", "", text)
-    text = re.sub(r"[（）()：:，,;；\s]+$", "", text).strip()
-    return text
-
-
-def _extract_stock_name(text: str) -> str:
-    value = str(text or "")
-    patterns = [
-        r"([\u4e00-\u9fa5A-Za-z]{2,10})[（(]\s*(?:000|001|002|003|300|301|600|601|603|605|688)\d{3}",
-        r"(?:000|001|002|003|300|301|600|601|603|605|688)\d{3}[）)]?\s*([\u4e00-\u9fa5A-Za-z]{2,10})",
-        r"([\u4e00-\u9fa5]{2,6})等(?:紧急|发布|公告|回应)",
-        r"([\u4e00-\u9fa5]{2,6})触及涨停",
-        r"([\u4e00-\u9fa5]{2,6})(?:股价|大涨|逆市|收涨|收跌|公告)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, value)
-        if match:
-            candidate = _clean_stock_name(match.group(1))
-            if _looks_like_real_stock_name(candidate):
-                return candidate
-    return ""
-
-
-def _looks_like_real_stock_name(candidate: str) -> bool:
-    if len(candidate) < 2 or len(candidate) > 8:
-        return False
-    if candidate in {"今日A股", "A股三大", "概念股", "上市公司", "证券时报", "东方财富", "财联社"}:
-        return False
-    if any(part in candidate for part in INVALID_STOCK_NAME_PARTS):
-        return False
-    return True
-
-
-def _merge_duplicate_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    grouped: dict[str, dict[str, str]] = {}
-    for row in rows:
-        key = _dedupe_key(row)
-        if key not in grouped:
-            grouped[key] = dict(row)
-            continue
-        grouped[key] = _merge_candidate_row(grouped[key], row)
-    return list(grouped.values())
-
-
-def _dedupe_key(row: dict[str, str]) -> str:
-    candidate_type = row.get("候选类型", "")
-    code = row.get("股票代码", "").strip()
-    name = row.get("股票名称", "").strip()
-    topic = row.get("所属题材", "").strip()
-    if candidate_type == "个股" and code:
-        return f"stock-code:{code}"
-    if candidate_type == "个股" and name:
-        return f"stock-name:{name}"
-    if candidate_type == "占位" and name:
-        return f"placeholder:{name}:{topic}"
-    return f"theme:{topic}"
-
-
-def _merge_candidate_row(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
-    merged = dict(left)
-    for field in ["可信度分数", "题材强度分"]:
-        merged[field] = str(max(_int(left.get(field)), _int(right.get(field))))
-    merged["信息来源"] = _merge_text_values(left.get("信息来源", ""), right.get("信息来源", ""))
-    merged["风险标签"] = _merge_text_values(left.get("风险标签", ""), right.get("风险标签", ""), empty_value="无")
-    merged["观察条件"] = _merge_summary(left.get("观察条件", ""), right.get("观察条件", ""))
-    merged["备注"] = _merge_summary(left.get("备注", ""), right.get("备注", ""))
-    if TYPE_ORDER.get(right.get("候选类型", ""), 9) < TYPE_ORDER.get(left.get("候选类型", ""), 9):
-        merged["候选类型"] = right.get("候选类型", left.get("候选类型", ""))
-    if _suggestion_rank(right.get("观察建议", "")) < _suggestion_rank(left.get("观察建议", "")):
-        merged["观察建议"] = right.get("观察建议", left.get("观察建议", ""))
-        merged["放弃条件"] = right.get("放弃条件", left.get("放弃条件", ""))
-    return merged
-
-
-def _merge_text_values(left: str, right: str, empty_value: str = "") -> str:
-    values: list[str] = []
-    for raw in [left, right]:
-        for part in re.split(r"[；;、,，]+", raw or ""):
-            text = part.strip()
-            if not text or text == empty_value:
-                continue
-            if text not in values:
-                values.append(text)
-    return "；".join(values) if values else empty_value
-
-
-def _merge_summary(left: str, right: str) -> str:
-    values = [value for value in dict.fromkeys([left.strip(), right.strip()]) if value]
-    return "；".join(values[:2])
-
-
-def _suggestion_rank(value: str) -> int:
-    return {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}.get(value, 9)
-
-
-def _theme_strength(market: dict[str, Any]) -> int:
-    change = _number(market.get("change_pct"))
-    limit_up = _int(market.get("limit_up_count"))
-    volume = _number(market.get("turnover_change_pct"))
-    score = round(change * 10 + limit_up * 4 + max(volume, 0) * 0.5)
-    return max(0, min(100, int(score)))
-
-
-def _theme_stage(strength: int, limit_up_count: int, risk_tags: str) -> str:
-    if any(risk in risk_tags for risk in MAJOR_RISKS):
-        return "风险降权"
-    if strength >= 80 or limit_up_count >= 8:
-        return "强势扩散"
-    if strength >= 60 or limit_up_count >= 5:
-        return "主线发酵"
-    if strength >= 40:
-        return "观察初期"
-    return "持续性待核验"
-
-
-def _market_signal_text(market: dict[str, Any]) -> str:
-    return (
-        f"板块涨幅 {_number(market.get('change_pct')):.1f}%；"
-        f"涨停数量 {_int(market.get('limit_up_count'))}；"
-        f"成交额 {_number(market.get('turnover_amount_billion')):.1f}亿元；"
-        f"放量幅度 {_number(market.get('turnover_change_pct')):.1f}%"
-    )
-
-
-def _observation_condition(row: dict[str, str], market: dict[str, Any], suggestion: str) -> str:
-    topic = row.get("题材", "相关题材")
-    if suggestion == "优先跟踪":
-        return f"继续核验{topic}是否有新增公告、政策或成交额配合，观察领涨股承接强度"
-    if suggestion == "只看核心":
-        return f"只观察{topic}领涨股、中军和成交额最集中的方向，后排仅作情绪参考"
-    if suggestion == "等待回踩":
-        return f"等待{topic}分歧、回踩和承接确认，观察放量后是否仍有资金回流"
-    if suggestion == "直接排除":
-        return "仅保留为风险复核线索，不进入高可信观察池"
-    return f"等待{topic}出现更清晰的来源验证或行情确认"
-
-
-def _abandon_condition(row: dict[str, str], risk_tags: str, suggestion: str) -> str:
-    if suggestion == "直接排除":
-        return "已触发排除条件，除非出现官方澄清或风险解除，否则不进入观察池"
-    conditions = ["出现公司否认、减持风险或监管风险", "题材强度下降且缺少新增可信来源"]
-    if "高位追涨风险" in risk_tags:
-        conditions.append("高位扩散后承接不足")
-    return "；".join(conditions)
-
-
-def _note(row: dict[str, str], state: dict[str, Any], suggestion: str) -> str:
-    update_time = state.get("last_update_time", "暂无更新时间")
-    return f"{suggestion}；更新时间：{update_time}；仅用于人工复核"
-
-
-def _sort_key(row: dict[str, str]) -> tuple[int, int, str]:
-    suggestion_order = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
-    return (
-        TYPE_ORDER.get(row.get("候选类型", ""), 9),
-        suggestion_order.get(row["观察建议"], 9),
-        -_int(row["可信度分数"]),
-        row["所属题材"],
-    )
-
-
 def _number(value: object) -> float:
     text = str(value or "").replace(",", "").replace("%", "").replace("亿元", "").replace("亿", "").strip()
-    if not text:
-        return 0.0
     try:
         return float(text)
     except ValueError:
@@ -410,9 +391,8 @@ def _int(value: object) -> int:
     return int(round(_number(value)))
 
 
-def _extract_stock_code(value: str) -> str:
-    match = re.search(r"\b[036]\d{5}(?:\.(?:SZ|SH))?\b", value, flags=re.IGNORECASE)
-    return match.group(0).upper() if match else ""
+def _suggestion_rank(value: str) -> int:
+    return {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}.get(value, 9)
 
 
 def _sanitize(value: object) -> str:

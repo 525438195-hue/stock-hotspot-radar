@@ -5,16 +5,16 @@ from __future__ import annotations
 
 class QueryBuilder:
     DEFAULT_SUFFIXES = [
-        "A股 今日",
-        "概念股",
-        "板块 涨停",
-        "上市公司",
-        "产业链 A股",
-        "政策 A股",
-        "交易所公告",
-        "巨潮资讯 公告",
+        "A股 今日 热点",
+        "概念股 今日",
+        "板块 涨停 今日",
+        "上市公司 代码",
+        "领涨股",
         "东方财富",
         "财联社",
+        "同花顺",
+        "证券时报",
+        "巨潮资讯 公告",
     ]
 
     DEFAULT_SYNONYMS = {
@@ -38,10 +38,11 @@ class QueryBuilder:
         for suffix in self.suffixes:
             for keyword in self.base_keywords:
                 queries.append(f"{keyword} {suffix}")
-        for keyword in self.base_keywords:
-            for synonym in self.synonyms.get(keyword, []):
-                for suffix in self.suffixes:
-                    queries.append(f"{synonym} {suffix}")
+        if self.suffixes is not self.DEFAULT_SUFFIXES:
+            for keyword in self.base_keywords:
+                for synonym in self.synonyms.get(keyword, []):
+                    for suffix in self.suffixes:
+                        queries.append(f"{synonym} {suffix}")
         return _dedupe_preserve_order(queries)
 
 

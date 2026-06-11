@@ -158,12 +158,31 @@ def write_news_summary(output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     source_path = output_dir / "search_results_deduped.csv"
     target_path = output_dir / "news_summary.csv"
-    fields = ["标题", "摘要", "来源", "域名", "查询词", "A股相关性分数", "是否保留", "过滤原因"]
+    fields = ["题材", "今日催化", "核心新闻", "来源", "原始链接", "市场反应", "风险点", "总结等级"]
     rows: list[dict[str, str]] = []
     if source_path.exists():
         with source_path.open(encoding="utf-8-sig", newline="") as file:
+            grouped: dict[str, list[dict[str, str]]] = {}
             for row in csv.DictReader(file):
-                rows.append({field: str(row.get(field, "") or "") for field in fields})
+                if row.get("是否保留") != "是":
+                    continue
+                topic = row.get("题材") or _topic_from_query(row.get("查询词", "")) or "未识别题材"
+                grouped.setdefault(topic, []).append(row)
+            for topic, items in grouped.items():
+                for row in items[:3]:
+                    result_type = row.get("结果类型", "")
+                    rows.append(
+                        {
+                            "题材": topic,
+                            "今日催化": row.get("摘要", "")[:120],
+                            "核心新闻": row.get("标题", ""),
+                            "来源": row.get("来源", ""),
+                            "原始链接": row.get("原始链接", ""),
+                            "市场反应": "等待行情确认" if result_type == "题材参考" else "关注板块强度和资金变化",
+                            "风险点": row.get("过滤原因", ""),
+                            "总结等级": result_type or "题材参考",
+                        }
+                    )
     with target_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
@@ -171,10 +190,18 @@ def write_news_summary(output_dir: Path) -> Path:
     return target_path
 
 
+def _topic_from_query(query: str) -> str:
+    for topic in ["AI算力", "机器人", "低空经济", "半导体", "军工", "数据要素", "新能源", "消费电子", "医药", "证券"]:
+        if topic in str(query):
+            return topic
+    return str(query).split()[0] if query else ""
+
+
 def save_report_state(path: Path, **state: Any) -> None:
     source_status = list(state.get("source_status", []))
-    success_count = sum(1 for item in source_status if item.get("success"))
-    source_success_rate = round(success_count / len(source_status), 4) if source_status else 0.0
+    active_sources = [item for item in source_status if item.get("status") in {"success", "failed", "timeout"}]
+    success_count = sum(1 for item in active_sources if item.get("success") or item.get("status") == "success")
+    source_success_rate = round(success_count / len(active_sources), 4) if active_sources else 0.0
     coverage_report = dict(state.get("coverage_report", {}) or {})
     payload = {
         "last_update_time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),

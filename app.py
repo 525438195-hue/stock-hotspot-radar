@@ -36,20 +36,19 @@ RISK_FLAGS_PATH = OUTPUT_DIR / "risk_flags.csv"
 STATE_PATH = OUTPUT_DIR / "report_state.json"
 CANDIDATES_PATH = OUTPUT_DIR / "stock_candidates.csv"
 SEARCH_DEDUPED_PATH = OUTPUT_DIR / "search_results_deduped.csv"
+NEWS_SUMMARY_PATH = OUTPUT_DIR / "news_summary.csv"
 
 MAIN_COLUMNS = [
-    "候选类型",
     "股票名称",
     "股票代码",
     "所属题材",
-    "题材强度分",
     "可信度分数",
-    "市场信号",
-    "验证状态",
-    "风险标签",
     "观察建议",
+    "风险标签",
     "观察条件",
     "放弃条件",
+    "相关新闻标题",
+    "原始链接",
 ]
 FORBIDDEN_TERMS = ["买入", "卖出", "推荐买", "满仓", "梭哈", "必涨", "明天涨停", "稳赚"]
 SUGGESTION_ORDER = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
@@ -227,7 +226,7 @@ def render_header(state: dict[str, Any], candidates: list[dict[str, str]], risk_
     cols[0].metric("更新时间", str(state.get("last_update_time", "暂无")))
     cols[1].metric(
         "今日观察股数量",
-        len([row for row in candidates if row.get("候选类型") == "个股" and row.get("观察建议") in POSITIVE_SUGGESTIONS]),
+        len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"} and row.get("观察建议") in POSITIVE_SUGGESTIONS]),
     )
     cols[2].metric("高可信热点数量", int(state.get("high_confidence_count", 0) or 0))
     cols[3].metric("风险股票数量", len(risk_rows))
@@ -240,6 +239,24 @@ def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
     cols[0].metric("Tavily Key 是否已读取", "是" if tavily_ready else "否")
     cols[1].metric("今日数据是否已生成", "是" if data_ready else "否")
     cols[2].metric("最近一次错误原因", last_error[:80])
+
+
+def render_source_status(state: dict[str, Any], candidates: list[dict[str, str]]) -> None:
+    st.subheader("数据源状态")
+    coverage = state.get("coverage_report", {}) if isinstance(state.get("coverage_report", {}), dict) else {}
+    deduped_rows = load_csv_rows(SEARCH_DEDUPED_PATH)
+    high_quality_count = len([row for row in deduped_rows if row.get("结果类型") == "高质量新闻"])
+    stock_count = len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"}])
+    status_cols = st.columns(4)
+    status_cols[0].metric("Tavily 搜索是否成功", "是" if any("Tavily" in str(item.get("source_name") or item.get("source")) and item.get("status") == "success" for item in state.get("source_status", [])) else "否")
+    status_cols[1].metric("搜索 query 数量", int(coverage.get("searched_queries_count") or coverage.get("search_queries_count") or 0))
+    status_cols[2].metric("原始结果数量", int(coverage.get("raw_results_count", 0) or 0))
+    status_cols[3].metric("去重后结果数量", len(deduped_rows))
+    status_cols2 = st.columns(4)
+    status_cols2[0].metric("保留结果数量", len([row for row in deduped_rows if row.get("是否保留") == "是"]))
+    status_cols2[1].metric("高质量新闻数量", high_quality_count)
+    status_cols2[2].metric("个股候选数量", stock_count)
+    status_cols2[3].metric("最近一次错误原因", str(st.session_state.get("last_auto_error", "") or "无")[:80])
 
 
 def render_actions() -> None:
@@ -279,14 +296,39 @@ def render_actions() -> None:
 
 def render_focus_table(rows: list[dict[str, str]]) -> None:
     st.subheader("今日重点观察股")
-    focus = [row for row in rows if row.get("候选类型") == "个股" and row.get("观察建议") in POSITIVE_SUGGESTIONS]
+    focus = [row for row in rows if row.get("候选类型") in {"个股", "个股待补代码"} and row.get("观察建议") in POSITIVE_SUGGESTIONS]
     if not focus:
-        st.info("暂无观察股，请先运行 auto 模式或填写 manual 数据。")
+        st.info("今日暂无明确个股观察池，但已生成题材观察和新闻总结。")
         return
     risky_count = sum(1 for row in focus if row.get("风险标签", "无") not in {"", "无"})
     if risky_count:
         st.warning(f"{risky_count} 条观察股带有风险标签，请先人工复核。")
     st.dataframe(_select_columns(_risk_display(focus), MAIN_COLUMNS), use_container_width=True, hide_index=True)
+
+
+def render_hot_news() -> None:
+    st.subheader("今日热点新闻")
+    rows = [
+        row
+        for row in load_csv_rows(SEARCH_DEDUPED_PATH)
+        if row.get("是否保留") == "是" or row.get("结果类型") == "高质量新闻"
+    ]
+    if not rows:
+        st.info("暂无保留新闻，请检查 Tavily Key 或云端运行状态。")
+        return
+    rows.sort(key=lambda row: (_score({"可信度分数": row.get("A股相关性分数", "0")}) * -1, row.get("题材", "")))
+    columns = ["标题", "来源", "题材", "发布时间", "A股相关性分数", "原始链接"]
+    st.dataframe(_select_columns(rows[:80], columns), use_container_width=True, hide_index=True)
+
+
+def render_news_summary() -> None:
+    st.subheader("今日热点新闻总结")
+    rows = load_csv_rows(NEWS_SUMMARY_PATH)
+    if not rows:
+        st.info("暂无新闻总结。")
+        return
+    columns = ["题材", "今日催化", "核心新闻", "来源", "原始链接", "市场反应", "风险点", "总结等级"]
+    st.dataframe(_select_columns(rows, columns), use_container_width=True, hide_index=True)
 
 
 def render_theme_observation(rows: list[dict[str, str]]) -> None:
@@ -366,7 +408,7 @@ def render_filtered_search_results() -> None:
         if not filtered:
             st.info("暂无被过滤搜索结果。")
             return
-        columns = ["标题", "来源", "域名", "查询词", "A股相关性分数", "是否保留", "过滤原因"]
+        columns = ["标题", "来源", "域名", "题材", "查询词", "结果类型", "A股相关性分数", "是否保留", "过滤原因"]
         st.dataframe(_select_columns(filtered, columns), use_container_width=True, hide_index=True)
 
 
@@ -483,11 +525,14 @@ def main() -> None:
     render_runtime_status(tavily_ready, data_ready)
     render_actions()
     render_focus_table(candidates)
+    render_hot_news()
+    render_news_summary()
     render_theme_observation(candidates)
     render_theme_rank(candidates)
     render_risk_section(risk_rows)
     render_excluded(candidates)
     render_rumors(candidates)
+    render_source_status(state, all_candidates)
     render_filtered_search_results()
     render_placeholder_debug(candidates)
     render_report()

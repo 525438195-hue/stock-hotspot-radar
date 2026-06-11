@@ -25,10 +25,13 @@ SEARCH_RESULT_FIELDS = [
     "来源类型",
     "原始链接",
     "域名",
+    "题材",
+    "发布时间",
     "查询词",
     "抓取时间",
     "是否来自Tavily",
     "是否来自RSS",
+    "结果类型",
     "是否保留",
     "过滤原因",
     "是否简体化",
@@ -115,6 +118,9 @@ class SearchFetcher:
         coverage = build_coverage_report(self.queries, source_status, annotated_results, deduped_results, warnings)
         coverage["retained_results_count"] = len(retained)
         coverage["filtered_results_count"] = len([item for item in deduped_results if item.get("keep") != "是"])
+        coverage["high_quality_news_count"] = len([item for item in deduped_results if item.get("result_type") == "高质量新闻"])
+        coverage["theme_reference_count"] = len([item for item in deduped_results if item.get("result_type") == "题材参考"])
+        coverage["search_queries_count"] = len(self.queries)
         events = [self._result_to_event(index, result) for index, result in enumerate(retained, start=1)]
 
         return {
@@ -222,6 +228,12 @@ class SearchFetcher:
             try:
                 timeout = self._request_timeout(15)
                 response = _post_tavily_with_optional_retry(requests, headers, body, timeout)
+            except TimeoutError as exc:
+                reason = str(exc)
+                warnings.append(f"{query}：{reason}；保留已获取的 Tavily 结果")
+                debug_entries.append(_tavily_debug_entry(query, body, "timeout", reason=reason))
+                _log("超时：保留已获取的 Tavily 结果，停止后续搜索")
+                break
             except requests.exceptions.Timeout as exc:  # type: ignore[attr-defined]
                 reason = _tavily_exception_detail("Timeout", exc)
                 warnings.append(f"{query}：{reason}")
@@ -458,6 +470,7 @@ class SearchFetcher:
             "query": query_value.strip(),
             "fetched_at": datetime.now().astimezone().isoformat(),
             "domain": _domain(url),
+            "topic": _topic_from_query(query_value),
             "is_tavily": is_tavily,
             "is_rss": is_rss,
             "is_from_tavily": is_tavily,
@@ -537,10 +550,13 @@ def _write_search_results_csv(path: Path, results: list[dict[str, Any]]) -> None
                     "来源类型": result.get("source_type", ""),
                     "原始链接": result.get("url", ""),
                     "域名": result.get("domain", ""),
+                    "题材": result.get("topic") or _topic_from_query(str(result.get("query", ""))),
+                    "发布时间": result.get("publish_time", ""),
                     "查询词": result.get("query", ""),
                     "抓取时间": result.get("fetched_at", ""),
                     "是否来自Tavily": "是" if result.get("is_from_tavily", result.get("is_tavily")) else "否",
                     "是否来自RSS": "是" if result.get("is_from_rss", result.get("is_rss")) else "否",
+                    "结果类型": result.get("result_type", result.get("quality_bucket", "")),
                     "是否保留": result.get("keep", ""),
                     "过滤原因": result.get("filter_reason", ""),
                     "是否简体化": "是" if result.get("simplified") else "否",

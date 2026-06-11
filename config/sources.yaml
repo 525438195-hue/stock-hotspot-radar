@@ -111,7 +111,7 @@ search:
     - 医药
     - 证券
   max_results_per_query: 3
-  max_queries_per_run: 12
+  max_queries_per_run: 50
 
 tavily_search:
   max_results_per_query: 3
