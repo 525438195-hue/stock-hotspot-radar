@@ -27,6 +27,7 @@ from main import run_pipeline as run_data_pipeline  # noqa: E402
 from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_secrets  # noqa: E402
 from stock_candidate_builder import POSITIVE_SUGGESTIONS, build_stock_candidates  # noqa: E402
 from time_utils import format_publish_time  # noqa: E402
+from watchlist_monitor import ensure_watchlist_template, run_watchlist_monitor  # noqa: E402
 
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -39,6 +40,9 @@ STATE_PATH = OUTPUT_DIR / "report_state.json"
 CANDIDATES_PATH = OUTPUT_DIR / "stock_candidates.csv"
 SEARCH_DEDUPED_PATH = OUTPUT_DIR / "search_results_deduped.csv"
 NEWS_SUMMARY_PATH = OUTPUT_DIR / "news_summary.csv"
+WATCHLIST_DATA_PATH = DATA_DIR / "watchlist.csv"
+WATCHLIST_NEWS_PATH = OUTPUT_DIR / "watchlist_news.csv"
+WATCHLIST_REVIEW_PATH = OUTPUT_DIR / "watchlist_review.csv"
 
 MAIN_COLUMNS = [
     "股票名称",
@@ -73,6 +77,7 @@ def load_state() -> dict[str, Any]:
 def ensure_runtime_dirs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_watchlist_template(WATCHLIST_DATA_PATH)
 
 
 def has_tavily_key() -> bool:
@@ -121,6 +126,7 @@ def run_auto_mode() -> tuple[bool, str]:
     try:
         with redirect_stdout(buffer), redirect_stderr(buffer):
             run_data_pipeline("auto")
+            run_watchlist_monitor(PROJECT_ROOT)
         st.session_state["last_auto_error"] = ""
         st.session_state["last_auto_log"] = buffer.getvalue()[-6000:]
         return True, ""
@@ -138,6 +144,21 @@ def load_csv_rows(path: Path) -> list[dict[str, str]]:
         return []
     with path.open(encoding="utf-8-sig", newline="") as file:
         return [_sanitize_row(row) for row in csv.DictReader(file)]
+
+
+@st.cache_data(ttl=300)
+def load_cached_csv_rows(path_text: str, mtime: float) -> list[dict[str, str]]:
+    del mtime
+    path = Path(path_text)
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return [_sanitize_row(row) for row in csv.DictReader(file)]
+
+
+def cached_csv_rows(path: Path) -> list[dict[str, str]]:
+    mtime = path.stat().st_mtime if path.exists() else 0.0
+    return load_cached_csv_rows(str(path), mtime)
 
 
 def ensure_candidates() -> None:
@@ -472,6 +493,7 @@ def render_actions() -> None:
                     st.session_state["used_cache"] = False
                     st.session_state["last_refresh_notice"] = f"今日数据刷新完成，用时 {elapsed:.1f} 秒。"
                     st.session_state["show_refresh_timing"] = True
+                    st.cache_data.clear()
                     st.rerun()
                 else:
                     progress.progress(100)
@@ -698,6 +720,101 @@ def render_filtered_search_results() -> None:
         st.dataframe(_select_columns(filtered, columns), use_container_width=True, hide_index=True)
 
 
+def render_watchlist_page(state: dict[str, Any]) -> None:
+    watchlist_rows = cached_csv_rows(WATCHLIST_DATA_PATH)
+    review_rows = cached_csv_rows(WATCHLIST_REVIEW_PATH)
+    news_rows = [row for row in cached_csv_rows(WATCHLIST_NEWS_PATH) if row.get("是否保留") == "是"]
+    if not watchlist_rows:
+        st.info("暂无自选股，请先在 data/watchlist.csv 中添加股票。")
+        return
+
+    cols = st.columns(5)
+    cols[0].metric("自选股数量", len(watchlist_rows))
+    cols[1].metric("今日有新消息数量", len([row for row in review_rows if row.get("情报状态") in {"有新消息", "有风险", "仅有传闻"}]))
+    cols[2].metric("风险提示数量", sum(_int_text(row.get("风险数量")) for row in review_rows))
+    cols[3].metric("传闻数量", sum(_int_text(row.get("传闻数量")) for row in review_rows))
+    cols[4].metric("上次刷新时间", state.get("watchlist_last_update_time") or _latest_value([row.get("更新时间", "") for row in review_rows]) or "暂无")
+
+    if not review_rows:
+        st.info("已读取自选股，但尚未生成情报。请点击“立即刷新今日数据”。")
+        return
+
+    news_by_stock: dict[str, list[dict[str, str]]] = {}
+    for row in news_rows:
+        news_by_stock.setdefault(_watchlist_key(row), []).append(row)
+
+    for row in review_rows:
+        with st.container(border=True):
+            title = f"{row.get('股票名称', '')} {row.get('股票代码', '')}"
+            st.markdown(f"### {title}")
+            cols_card = st.columns([1.5, 1, 1, 2])
+            cols_card[0].write(f"所属题材：{row.get('所属题材', '') or '未填写'}")
+            cols_card[1].write(f"持仓状态：{row.get('持仓状态', '') or '未填写'}")
+            cols_card[2].write(f"规则观察建议：{row.get('规则观察建议', '')}")
+            cols_card[3].write(
+                f"新闻 {row.get('新闻数量', '0')} / 公告 {row.get('公告数量', '0')} / "
+                f"传闻 {row.get('传闻数量', '0')} / 风险 {row.get('风险数量', '0')}"
+            )
+            latest = row.get("最新消息标题", "") or "暂无新消息"
+            st.write(f"最新消息：{_compact_text(latest, 70)}")
+            risk_text = row.get("风险提示", "") or "无"
+            if risk_text != "无":
+                st.warning(f"风险提示：{risk_text}")
+            else:
+                st.caption("风险提示：无")
+            with st.expander("查看详细情报", expanded=False):
+                st.write(f"核心理由：{row.get('核心理由', '')}")
+                st.write(f"观察条件：{row.get('观察条件', '')}")
+                st.write(f"放弃条件：{row.get('放弃条件', '')}")
+                stock_news = news_by_stock.get(_watchlist_key(row), [])
+                if not stock_news:
+                    st.info("暂无保留消息。")
+                for message_type in ["正式新闻", "公告信息", "社媒传闻", "风险消息", "行情异动"]:
+                    _render_watchlist_news_group(message_type, stock_news)
+
+
+def _render_watchlist_news_group(message_type: str, rows: list[dict[str, str]]) -> None:
+    group = [row for row in rows if row.get("消息类型") == message_type]
+    if not group:
+        return
+    st.markdown(f"**{message_type}**")
+    display_rows = [
+        {
+            "标题": _compact_text(row.get("标题", ""), 60),
+            "来源": row.get("来源", ""),
+            "发布时间": row.get("发布时间_北京时间", ""),
+            "风险标签": row.get("风险标签", ""),
+            "原始链接": row.get("原始链接", ""),
+        }
+        for row in group[:10]
+    ]
+    try:
+        st.dataframe(
+            display_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"原始链接": st.column_config.LinkColumn("原始链接", display_text="查看原文")},
+        )
+    except Exception:
+        st.dataframe(display_rows, use_container_width=True, hide_index=True)
+
+
+def _watchlist_key(row: dict[str, str]) -> str:
+    return row.get("股票代码") or row.get("股票名称", "")
+
+
+def _int_text(value: object) -> int:
+    try:
+        return int(float(str(value or "0")))
+    except ValueError:
+        return 0
+
+
+def _latest_value(values: list[str]) -> str:
+    clean = [value for value in values if value]
+    return max(clean) if clean else ""
+
+
 def render_placeholder_debug(rows: list[dict[str, str]]) -> None:
     placeholders = [row for row in rows if row.get("候选类型") == "占位"]
     if not placeholders:
@@ -811,18 +928,7 @@ def main() -> None:
     show_refresh_timing = bool(st.session_state.pop("show_refresh_timing", False))
 
     state = load_state()
-    needs_auto_refresh = should_auto_refresh(state)
-    st.session_state["used_cache"] = not needs_auto_refresh
-    if needs_auto_refresh and not st.session_state.get("auto_refresh_attempted", False):
-        st.session_state["auto_refresh_attempted"] = True
-        with st.spinner("正在自动刷新今日数据..."):
-            ok, error = run_auto_mode()
-        if ok:
-            st.success("今日数据已自动刷新。")
-            st.session_state["used_cache"] = False
-            state = load_state()
-        else:
-            st.error(f"自动刷新失败：{error}")
+    st.session_state.setdefault("used_cache", True)
 
     ensure_candidates()
 
@@ -837,19 +943,23 @@ def main() -> None:
             _render_refresh_timing(state.get("refresh_timing", {}))
     render_runtime_status(tavily_ready, data_ready)
     render_actions()
-    render_focus_table(candidates)
-    render_hot_news()
-    render_news_summary()
-    render_theme_observation(candidates)
-    render_theme_rank(candidates)
-    render_risk_section(risk_rows)
-    render_excluded(candidates)
-    render_rumors(candidates)
-    render_source_status(state, all_candidates)
-    render_filtered_search_results()
-    render_placeholder_debug(candidates)
-    render_report()
-    render_cloud_debug(tavily_ready)
+    hotspot_tab, watchlist_tab = st.tabs(["热点雷达", "我的自选股"])
+    with hotspot_tab:
+        render_focus_table(candidates)
+        render_hot_news()
+        render_news_summary()
+        render_theme_observation(candidates)
+        render_theme_rank(candidates)
+        render_risk_section(risk_rows)
+        render_excluded(candidates)
+        render_rumors(candidates)
+        render_source_status(state, all_candidates)
+        render_filtered_search_results()
+        render_placeholder_debug(candidates)
+        render_report()
+        render_cloud_debug(tavily_ready)
+    with watchlist_tab:
+        render_watchlist_page(load_state())
 
 
 if __name__ == "__main__":

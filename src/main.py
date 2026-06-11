@@ -236,6 +236,7 @@ def save_report_state(path: Path, **state: Any) -> None:
     deduped_result_count = int(coverage_report.get("deduped_results_count", 0) or coverage_report.get("deduped_result_count", 0) or 0)
     high_quality_news_count = int(coverage_report.get("high_quality_news_count", 0) or 0)
     refresh_timing = _refresh_timing(state.get("refresh_timing", {}))
+    watchlist_metrics = _watchlist_existing_metrics(PROJECT_ROOT / "outputs")
     payload = {
         "last_update_time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": state.get("mode", ""),
@@ -253,6 +254,7 @@ def save_report_state(path: Path, **state: Any) -> None:
         "high_quality_news_count": high_quality_news_count,
         "stock_candidate_count": int(state.get("stock_candidate_count", 0)),
         "refresh_timing": refresh_timing,
+        **watchlist_metrics,
         "fallback_used": fallback_used,
         "successful_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "success"],
         "failed_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "failed"],
@@ -357,6 +359,31 @@ def _csv_row_count(path: Path) -> int:
         return 0
     with path.open(encoding="utf-8-sig", newline="") as file:
         return sum(1 for _ in csv.DictReader(file))
+
+
+def _watchlist_existing_metrics(output_dir: Path) -> dict[str, Any]:
+    news_rows = _read_csv_rows(output_dir / "watchlist_news.csv")
+    review_rows = _read_csv_rows(output_dir / "watchlist_review.csv")
+    retained = [row for row in news_rows if row.get("是否保留") == "是"]
+    return {
+        "watchlist_stock_count": len(review_rows),
+        "watchlist_news_count": len(retained),
+        "watchlist_rumor_count": sum(1 for row in retained if row.get("消息类型") == "社媒传闻"),
+        "watchlist_risk_count": sum(1 for row in review_rows if row.get("情报状态") == "有风险"),
+        "watchlist_last_update_time": _latest_value([row.get("更新时间", "") for row in review_rows]),
+    }
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return list(csv.DictReader(file))
+
+
+def _latest_value(values: list[str]) -> str:
+    clean = [value for value in values if value]
+    return max(clean) if clean else ""
 
 
 def main(argv: list[str] | None = None) -> dict[str, Path]:
