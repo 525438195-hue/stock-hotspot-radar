@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import traceback
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ if str(SRC_DIR) not in sys.path:
 from main import run_pipeline as run_data_pipeline  # noqa: E402
 from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_secrets  # noqa: E402
 from stock_candidate_builder import POSITIVE_SUGGESTIONS, build_stock_candidates  # noqa: E402
+from time_utils import format_publish_time  # noqa: E402
 
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
@@ -45,10 +47,8 @@ MAIN_COLUMNS = [
     "可信度分数",
     "观察建议",
     "风险标签",
-    "观察条件",
-    "放弃条件",
     "相关新闻标题",
-    "原始链接",
+    "发布时间",
 ]
 FORBIDDEN_TERMS = ["买入", "卖出", "推荐买", "满仓", "梭哈", "必涨", "明天涨停", "稳赚"]
 SUGGESTION_ORDER = {"优先跟踪": 0, "只看核心": 1, "等待回踩": 2, "暂不参与": 3, "直接排除": 4}
@@ -219,18 +219,182 @@ def apply_sidebar_filters(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return sort_candidates(filtered)
 
 
+def _source_status_table(state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = state.get("source_status_table")
+    if isinstance(rows, list) and rows:
+        return [row for row in rows if isinstance(row, dict)]
+    legacy_rows = state.get("source_status")
+    if not isinstance(legacy_rows, list):
+        return []
+    normalized_rows: list[dict[str, Any]] = []
+    for item in legacy_rows:
+        if not isinstance(item, dict):
+            continue
+        status = _source_status(item)
+        normalized_rows.append(
+            {
+                "source_name": str(item.get("source_name") or item.get("source") or ""),
+                "source_type": str(item.get("source_type") or "unknown"),
+                "status": status,
+                "count": int(item.get("item_count", 0) or item.get("count", 0) or 0),
+                "counted_in_success_rate": status in {"success", "failed", "timeout"},
+                "reason": str(item.get("reason") or item.get("warning") or "无"),
+                "note": _source_status_note(item, status),
+            }
+        )
+    return normalized_rows
+
+
+def _source_status(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "").strip()
+    reason = str(item.get("reason") or item.get("warning") or "")
+    if status in {"success", "failed", "timeout", "skipped", "placeholder", "fallback"}:
+        return status
+    if "占位源" in reason or "未接入真实接口" in reason:
+        return "placeholder"
+    if "未启用" in reason or "未配置" in reason or "URL 为空" in reason:
+        return "skipped"
+    if item.get("success"):
+        return "success"
+    return "failed"
+
+
+def _source_status_note(item: dict[str, Any], status: str) -> str:
+    source_name = str(item.get("source_name") or item.get("source") or "")
+    if status == "placeholder":
+        return "未接入真实接口"
+    if status == "skipped":
+        return "未启用或配置不完整，不计入成功率"
+    if status == "fallback":
+        return str(item.get("note") or "兜底数据")
+    if "Tavily" in source_name:
+        return "主搜索源"
+    if status == "timeout":
+        return "超时，若有 fallback 会单独显示"
+    if status == "failed":
+        return "启用源请求失败，计入成功率"
+    return "启用源成功返回有效数据"
+
+
+def _source_type_text(value: object) -> str:
+    labels = {
+        "government_policy": "政策文件",
+        "official_announcement": "公司公告",
+        "exchange_announcement": "交易所公告",
+        "financial_news": "财经媒体",
+        "industry_news": "行业媒体",
+        "search_api": "搜索API",
+        "overseas_news": "海外新闻",
+        "social_sentiment": "社媒情绪",
+        "market_data": "行情数据",
+        "fallback": "fallback",
+        "unknown": "未知来源",
+    }
+    return labels.get(str(value), str(value or "未知来源"))
+
+
+def _enabled_source_rate_text(state: dict[str, Any]) -> str:
+    value = state.get("enabled_source_success_rate")
+    if value is None:
+        rows = _source_status_table(state)
+        active = [row for row in rows if row.get("counted_in_success_rate")]
+        if not active:
+            return "暂无启用数据源"
+        success_count = sum(1 for row in active if row.get("status") == "success")
+        value = success_count / len(active)
+    try:
+        return f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return "暂无启用数据源"
+
+
+def _tavily_row(state: dict[str, Any]) -> dict[str, Any] | None:
+    for row in _source_status_table(state):
+        if "Tavily" in str(row.get("source_name", "")):
+            return row
+    return None
+
+
+def _tavily_status_text(state: dict[str, Any]) -> str:
+    row = _tavily_row(state)
+    if row and row.get("status") == "success":
+        return "成功"
+    if row and row.get("status") == "failed":
+        return "失败"
+    if row and row.get("status") == "timeout":
+        return "超时"
+    if row and row.get("status") == "skipped":
+        return "未配置"
+    return "待刷新" if has_tavily_key() else "未配置"
+
+
+def _tavily_result_count(state: dict[str, Any]) -> int:
+    if state.get("tavily_result_count") is not None:
+        try:
+            return int(state.get("tavily_result_count") or 0)
+        except (TypeError, ValueError):
+            pass
+    row = _tavily_row(state)
+    if not row:
+        return 0
+    return int(row.get("count", 0) or 0)
+
+
+def _fallback_text(state: dict[str, Any]) -> str:
+    values = state.get("fallback_used") or state.get("fallback_usage") or []
+    if not values:
+        rows = _source_status_table(state)
+        values = [row.get("source_name") for row in rows if row.get("status") == "fallback"]
+    if not values:
+        return "未使用"
+    return "、".join(str(value) for value in values if value) or "未使用"
+
+
+def _stock_candidate_count(candidates: list[dict[str, str]], state: dict[str, Any]) -> int:
+    count = len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"}])
+    if count:
+        return count
+    try:
+        return int(state.get("stock_candidate_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _last_refresh_seconds(state: dict[str, Any]) -> str:
+    timing = state.get("refresh_timing", {}) if isinstance(state.get("refresh_timing", {}), dict) else {}
+    try:
+        seconds = float(timing.get("total_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    return f"{seconds:.1f} 秒" if seconds else "暂无"
+
+
+def _hot_news_count() -> int:
+    rows = load_csv_rows(SEARCH_DEDUPED_PATH)
+    return len([row for row in rows if row.get("是否保留") == "是" or row.get("结果类型") == "高质量新闻"])
+
+
+def _cache_status_text() -> str:
+    value = st.session_state.get("used_cache")
+    if value is None:
+        return "是"
+    return "是" if value else "否"
+
+
 def render_header(state: dict[str, Any], candidates: list[dict[str, str]], risk_rows: list[dict[str, str]]) -> None:
     st.title("A股热点个股雷达")
     st.caption("仅生成热点观察池，不构成买卖建议，不自动下单。")
-    cols = st.columns(5)
-    cols[0].metric("更新时间", str(state.get("last_update_time", "暂无")))
-    cols[1].metric(
-        "今日观察股数量",
-        len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"} and row.get("观察建议") in POSITIVE_SUGGESTIONS]),
-    )
-    cols[2].metric("高可信热点数量", int(state.get("high_confidence_count", 0) or 0))
-    cols[3].metric("风险股票数量", len(risk_rows))
-    cols[4].metric("数据源成功率", f"{float(state.get('source_success_rate', 0) or 0) * 100:.0f}%")
+    cols = st.columns(4)
+    cols[0].metric("Tavily Key 是否读取", "是" if has_tavily_key() else "否")
+    cols[1].metric("今日数据是否生成", "是" if today_data_generated(state) else "否")
+    cols[2].metric("上次刷新时间", str(state.get("last_update_time", "暂无")))
+    cols[3].metric("上次刷新耗时", _last_refresh_seconds(state))
+
+    cols2 = st.columns(4)
+    cols2[0].metric("本次是否使用缓存", _cache_status_text())
+    cols2[1].metric("今日热点新闻数量", _hot_news_count())
+    cols2[2].metric("个股候选数量", _stock_candidate_count(candidates, state))
+    cols2[3].metric("高质量新闻数量", int(state.get("high_quality_news_count", 0) or 0))
 
 
 def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
@@ -247,29 +411,73 @@ def render_source_status(state: dict[str, Any], candidates: list[dict[str, str]]
     deduped_rows = load_csv_rows(SEARCH_DEDUPED_PATH)
     high_quality_count = len([row for row in deduped_rows if row.get("结果类型") == "高质量新闻"])
     stock_count = len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"}])
-    status_cols = st.columns(4)
-    status_cols[0].metric("Tavily 搜索是否成功", "是" if any("Tavily" in str(item.get("source_name") or item.get("source")) and item.get("status") == "success" for item in state.get("source_status", [])) else "否")
+    status_cols = st.columns(5)
+    status_cols[0].metric("Tavily 状态", _tavily_status_text(state))
     status_cols[1].metric("搜索 query 数量", int(coverage.get("searched_queries_count") or coverage.get("search_queries_count") or 0))
     status_cols[2].metric("原始结果数量", int(coverage.get("raw_results_count", 0) or 0))
-    status_cols[3].metric("去重后结果数量", len(deduped_rows))
+    status_cols[3].metric("去重后结果数量", int(state.get("deduped_result_count", 0) or len(deduped_rows)))
+    status_cols[4].metric("启用源成功率", _enabled_source_rate_text(state))
     status_cols2 = st.columns(4)
     status_cols2[0].metric("保留结果数量", len([row for row in deduped_rows if row.get("是否保留") == "是"]))
     status_cols2[1].metric("高质量新闻数量", high_quality_count)
     status_cols2[2].metric("个股候选数量", stock_count)
     status_cols2[3].metric("最近一次错误原因", str(st.session_state.get("last_auto_error", "") or "无")[:80])
 
+    rows = []
+    for row in _source_status_table(state):
+        status = str(row.get("status", ""))
+        rows.append(
+            {
+                "数据源名称": row.get("source_name", ""),
+                "类型": _source_type_text(row.get("source_type")),
+                "状态": status,
+                "是否计入成功率": "是" if row.get("counted_in_success_rate") else "否",
+                "返回数量": int(row.get("count", 0) or 0),
+                "失败原因": row.get("reason", "无"),
+                "备注": row.get("note", ""),
+            }
+        )
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无数据源状态，请先刷新今日数据。")
+
 
 def render_actions() -> None:
     cols = st.columns(4)
     with cols[0]:
         if st.button("立即刷新今日数据", use_container_width=True):
-            ok, error = run_auto_mode()
-            if ok:
-                regenerate_candidates()
-                st.success("联网刷新完成，观察池已更新")
-                st.rerun()
-            else:
-                st.error(f"联网刷新失败：{error}")
+            start = time.perf_counter()
+            progress = st.progress(0)
+            with st.status("正在刷新今日数据...", expanded=True) as status:
+                st.write("正在生成搜索关键词")
+                progress.progress(10)
+                st.write("正在请求 Tavily")
+                progress.progress(25)
+                ok, error = run_auto_mode()
+                elapsed = time.perf_counter() - start
+                if ok:
+                    st.write("正在清洗和过滤新闻")
+                    progress.progress(70)
+                    st.write("正在生成观察池")
+                    progress.progress(82)
+                    regenerate_candidates()
+                    st.write("正在生成新闻总结")
+                    progress.progress(90)
+                    st.write("正在写入缓存文件")
+                    progress.progress(98)
+                    progress.progress(100)
+                    status.update(label=f"今日数据刷新完成，用时 {elapsed:.1f} 秒。", state="complete")
+                    _render_refresh_timing(load_state().get("refresh_timing", {}))
+                    st.session_state["used_cache"] = False
+                    st.session_state["last_refresh_notice"] = f"今日数据刷新完成，用时 {elapsed:.1f} 秒。"
+                    st.session_state["show_refresh_timing"] = True
+                    st.rerun()
+                else:
+                    progress.progress(100)
+                    status.update(label=f"刷新失败，用时 {elapsed:.1f} 秒，错误原因：{error}", state="error")
+                    st.session_state["used_cache"] = False
+                    st.error(f"刷新失败，用时 {elapsed:.1f} 秒，错误原因：{error}")
 
     with cols[1]:
         if st.button("重新生成观察池", use_container_width=True):
@@ -294,6 +502,29 @@ def render_actions() -> None:
             st.session_state["show_report"] = True
 
 
+def _render_refresh_timing(timing: object) -> None:
+    if not isinstance(timing, dict) or not timing:
+        st.caption("暂无分阶段耗时。")
+        return
+    labels = {
+        "total_seconds": "总耗时",
+        "query_build_seconds": "生成搜索关键词",
+        "tavily_fetch_seconds": "请求 Tavily",
+        "filter_seconds": "清洗和过滤新闻",
+        "candidate_build_seconds": "生成观察池",
+        "news_summary_seconds": "生成新闻总结",
+        "write_output_seconds": "写入缓存文件",
+    }
+    rows = []
+    for key, label in labels.items():
+        try:
+            seconds = float(timing.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            seconds = 0
+        rows.append({"阶段": label, "耗时": f"{seconds:.1f} 秒"})
+    st.table(rows)
+
+
 def render_focus_table(rows: list[dict[str, str]]) -> None:
     st.subheader("今日重点观察股")
     focus = [row for row in rows if row.get("候选类型") in {"个股", "个股待补代码"} and row.get("观察建议") in POSITIVE_SUGGESTIONS]
@@ -303,7 +534,43 @@ def render_focus_table(rows: list[dict[str, str]]) -> None:
     risky_count = sum(1 for row in focus if row.get("风险标签", "无") not in {"", "无"})
     if risky_count:
         st.warning(f"{risky_count} 条观察股带有风险标签，请先人工复核。")
-    st.dataframe(_select_columns(_risk_display(focus), MAIN_COLUMNS), use_container_width=True, hide_index=True)
+    st.dataframe(_focus_display_rows(focus), use_container_width=True, hide_index=True)
+    render_stock_details(focus)
+
+
+def _focus_display_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    display_rows = []
+    for row in _risk_display(rows):
+        display_rows.append(
+            {
+                "股票名称": row.get("股票名称", ""),
+                "股票代码": row.get("股票代码", ""),
+                "所属题材": row.get("所属题材", ""),
+                "可信度分数": row.get("可信度分数", ""),
+                "观察建议": row.get("观察建议", ""),
+                "风险标签": _compact_text(row.get("风险标签", ""), 40),
+                "相关新闻标题": _compact_text(row.get("相关新闻标题", ""), 50),
+                "发布时间": row.get("发布时间") or "时间未知",
+            }
+        )
+    return _select_columns(display_rows, MAIN_COLUMNS)
+
+
+def render_stock_details(rows: list[dict[str, str]]) -> None:
+    st.subheader("个股详情")
+    for row in rows:
+        title = f"{row.get('股票名称', '未命名')} {row.get('股票代码', '')}｜{row.get('所属题材', '')}｜{row.get('观察建议', '')}"
+        with st.expander(title, expanded=False):
+            st.write(f"观察条件：{_dedupe_text(row.get('观察条件', ''))}")
+            st.write(f"放弃条件：{_dedupe_text(row.get('放弃条件', ''))}")
+            st.write(f"市场信号：{_dedupe_text(row.get('市场信号', ''))}")
+            st.write(f"信息来源：{_dedupe_text(row.get('信息来源', ''))}")
+            url = row.get("原始链接", "")
+            if url:
+                st.markdown(f"原始链接：[查看原文]({url})")
+            else:
+                st.write("原始链接：暂无")
+            st.write(f"备注：{_dedupe_text(row.get('备注', ''))}")
 
 
 def render_hot_news() -> None:
@@ -317,8 +584,27 @@ def render_hot_news() -> None:
         st.info("暂无保留新闻，请检查 Tavily Key 或云端运行状态。")
         return
     rows.sort(key=lambda row: (_score({"可信度分数": row.get("A股相关性分数", "0")}) * -1, row.get("题材", "")))
-    columns = ["标题", "来源", "题材", "发布时间", "A股相关性分数", "原始链接"]
-    st.dataframe(_select_columns(rows[:80], columns), use_container_width=True, hide_index=True)
+    display_rows = []
+    for row in rows[:80]:
+        display_rows.append(
+            {
+                "标题": _compact_text(row.get("标题", ""), 50),
+                "来源": row.get("来源", ""),
+                "题材": row.get("题材", ""),
+                "发布时间_北京时间": row.get("发布时间_北京时间") or format_publish_time(row.get("发布时间", "")),
+                "A股相关性分数": row.get("A股相关性分数", ""),
+                "原始链接": row.get("原始链接", ""),
+            }
+        )
+    try:
+        st.dataframe(
+            display_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"原始链接": st.column_config.LinkColumn("原始链接", display_text="查看原文")},
+        )
+    except Exception:
+        st.dataframe(display_rows, use_container_width=True, hide_index=True)
 
 
 def render_news_summary() -> None:
@@ -455,6 +741,23 @@ def _select_columns(rows: list[dict[str, str]], columns: list[str]) -> list[dict
     return [{column: row.get(column, "") for column in columns} for row in rows]
 
 
+def _compact_text(value: object, max_len: int = 40) -> str:
+    text = _dedupe_text(value)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _dedupe_text(value: object) -> str:
+    text = _sanitize_text(value)
+    parts: list[str] = []
+    for chunk in str(text).replace("\n", "；").replace("|", "；").split("；"):
+        item = chunk.strip()
+        if item and item != "无" and item not in parts:
+            parts.append(item)
+    return "；".join(parts) if parts else "无"
+
+
 def _risk_display(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     result = []
     for row in rows:
@@ -502,14 +805,21 @@ def main() -> None:
     tavily_ready = has_tavily_key()
     if not tavily_ready:
         st.warning("当前未配置 Tavily API Key，无法联网搜索。")
+    notice = st.session_state.pop("last_refresh_notice", "")
+    if notice:
+        st.success(notice)
+    show_refresh_timing = bool(st.session_state.pop("show_refresh_timing", False))
 
     state = load_state()
-    if should_auto_refresh(state) and not st.session_state.get("auto_refresh_attempted", False):
+    needs_auto_refresh = should_auto_refresh(state)
+    st.session_state["used_cache"] = not needs_auto_refresh
+    if needs_auto_refresh and not st.session_state.get("auto_refresh_attempted", False):
         st.session_state["auto_refresh_attempted"] = True
         with st.spinner("正在自动刷新今日数据..."):
             ok, error = run_auto_mode()
         if ok:
             st.success("今日数据已自动刷新。")
+            st.session_state["used_cache"] = False
             state = load_state()
         else:
             st.error(f"自动刷新失败：{error}")
@@ -522,6 +832,9 @@ def main() -> None:
     data_ready = today_data_generated(load_state())
 
     render_header(state, all_candidates, risk_rows)
+    if show_refresh_timing:
+        with st.expander("本次刷新耗时", expanded=True):
+            _render_refresh_timing(state.get("refresh_timing", {}))
     render_runtime_status(tavily_ready, data_ready)
     render_actions()
     render_focus_table(candidates)

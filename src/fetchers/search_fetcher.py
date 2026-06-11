@@ -16,6 +16,7 @@ from result_quality_filter import annotate_results, retained_results
 from secrets_manager import runtime_secret
 from source_config import configured_sources, status_from_record
 from text_normalizer import normalize_text_with_flag, normalizer_warning
+from time_utils import format_publish_time, format_publish_time_iso
 
 
 SEARCH_RESULT_FIELDS = [
@@ -27,6 +28,7 @@ SEARCH_RESULT_FIELDS = [
     "域名",
     "题材",
     "发布时间",
+    "发布时间_北京时间",
     "查询词",
     "抓取时间",
     "是否来自Tavily",
@@ -64,6 +66,7 @@ class SearchFetcher:
         max_queries = int(self.search_config.get("max_queries_per_run", 20))
         self.queries = self.queries[: max(1, max_queries)]
         self.deadline = deadline
+        self.refresh_timing: dict[str, float] = {}
 
     def safe_fetch(self) -> dict[str, Any]:
         raw_results: list[dict[str, Any]] = []
@@ -107,6 +110,7 @@ class SearchFetcher:
         if normalized_warning:
             warnings.append(normalized_warning)
 
+        filter_start = time.perf_counter()
         annotated_results = annotate_results(
             raw_results,
             include_domains=self._include_domains(),
@@ -114,8 +118,10 @@ class SearchFetcher:
         )
         deduped_results = _dedupe_results(annotated_results)
         retained = retained_results(deduped_results)
+        self.refresh_timing["filter_seconds"] = round(time.perf_counter() - filter_start, 3)
         self._write_search_result_csvs(annotated_results, deduped_results)
         coverage = build_coverage_report(self.queries, source_status, annotated_results, deduped_results, warnings)
+        coverage["refresh_timing"] = dict(self.refresh_timing)
         coverage["retained_results_count"] = len(retained)
         coverage["filtered_results_count"] = len([item for item in deduped_results if item.get("keep") != "是"])
         coverage["high_quality_news_count"] = len([item for item in deduped_results if item.get("result_type") == "高质量新闻"])
@@ -185,9 +191,11 @@ class SearchFetcher:
         raw_results.extend(items)
 
     def _fetch_tavily(self, source: dict[str, Any]) -> dict[str, Any]:
+        tavily_start = time.perf_counter()
         api_key = self._tavily_api_key(source)
         debug_entries: list[dict[str, Any]] = []
         if not api_key:
+            self.refresh_timing["tavily_fetch_seconds"] = round(time.perf_counter() - tavily_start, 3)
             self._write_tavily_debug(
                 [
                     {
@@ -257,6 +265,7 @@ class SearchFetcher:
                 reason = f"认证失败：请检查 TAVILY_API_KEY；状态码 {response.status_code}；返回正文 {response_text}"
                 debug_entries.append(_tavily_debug_entry(query, body, "failed", response=response, reason=reason))
                 self._write_tavily_debug(debug_entries)
+                self.refresh_timing["tavily_fetch_seconds"] = round(time.perf_counter() - tavily_start, 3)
                 _log(f"Tavily 失败：{query}；异常类型 HTTPError；状态码 {response.status_code}；返回正文 {response_text}")
                 return {"status": "failed", "items": items, "warning": reason}
             try:
@@ -318,6 +327,7 @@ class SearchFetcher:
                     )
                 )
         self._write_tavily_debug(debug_entries)
+        self.refresh_timing["tavily_fetch_seconds"] = round(time.perf_counter() - tavily_start, 3)
         warning = "；".join(warnings)
         if not items and not warning:
             warning = f"返回结果为空：Tavily 已请求 {len(self.queries)} 个查询词但未返回候选"
@@ -467,6 +477,8 @@ class SearchFetcher:
             "source": source_value.strip(),
             "source_type": source_type,
             "publish_time": str(publish_time or "").strip(),
+            "publish_time_iso": format_publish_time_iso(publish_time),
+            "publish_time_beijing": format_publish_time(publish_time),
             "query": query_value.strip(),
             "fetched_at": datetime.now().astimezone().isoformat(),
             "domain": _domain(url),
@@ -487,7 +499,7 @@ class SearchFetcher:
             "tickers": [],
             "source": result["source"],
             "source_type": result["source_type"],
-            "publish_time": result.get("publish_time") or result.get("fetched_at", ""),
+            "publish_time": result.get("publish_time_iso") or result.get("publish_time") or result.get("fetched_at", ""),
             "url": result["url"],
             "duplicate_count": 1,
             "search_query": result.get("query", ""),
@@ -552,6 +564,7 @@ def _write_search_results_csv(path: Path, results: list[dict[str, Any]]) -> None
                     "域名": result.get("domain", ""),
                     "题材": result.get("topic") or _topic_from_query(str(result.get("query", ""))),
                     "发布时间": result.get("publish_time", ""),
+                    "发布时间_北京时间": result.get("publish_time_beijing") or format_publish_time(result.get("publish_time", "")),
                     "查询词": result.get("query", ""),
                     "抓取时间": result.get("fetched_at", ""),
                     "是否来自Tavily": "是" if result.get("is_from_tavily", result.get("is_tavily")) else "否",

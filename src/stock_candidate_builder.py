@@ -26,6 +26,7 @@ CANDIDATE_FIELDS = [
     "观察条件",
     "放弃条件",
     "相关新闻标题",
+    "发布时间",
     "原始链接",
     "备注",
 ]
@@ -82,6 +83,7 @@ def build_stock_candidates(
                         verification="部分确认" if result_type == "高质量新闻" else "仅题材参考",
                         risk_tags=risk_tags,
                         news_title=row.get("标题", ""),
+                        publish_time=row.get("发布时间_北京时间") or row.get("发布时间", ""),
                         url=row.get("原始链接", ""),
                         result_type=result_type,
                         state=state,
@@ -101,6 +103,7 @@ def build_stock_candidates(
                     verification="题材参考" if result_type == "题材参考" else "部分确认",
                     risk_tags="",
                     news_title=row.get("标题", ""),
+                    publish_time=row.get("发布时间_北京时间") or row.get("发布时间", ""),
                     url=row.get("原始链接", ""),
                     result_type=result_type,
                     state=state,
@@ -125,6 +128,7 @@ def build_stock_candidates(
                     verification="仅有市场反应",
                     risk_tags=risk_tags,
                     news_title="",
+                    publish_time="",
                     url="",
                     result_type="行情补充",
                     state=state,
@@ -144,6 +148,7 @@ def build_stock_candidates(
                     verification="仅有市场反应",
                     risk_tags="",
                     news_title="",
+                    publish_time="",
                     url="",
                     result_type="行情补充",
                     state=state,
@@ -156,7 +161,7 @@ def build_stock_candidates(
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=CANDIDATE_FIELDS)
         writer.writeheader()
-        writer.writerows([{field: _sanitize(row.get(field, "")) for field in CANDIDATE_FIELDS} for row in candidates])
+        writer.writerows([{field: _sanitize(_compress_field(field, row.get(field, ""))) for field in CANDIDATE_FIELDS} for row in candidates])
     return path
 
 
@@ -173,6 +178,7 @@ def _candidate_row(
     verification: str,
     risk_tags: str,
     news_title: str,
+    publish_time: str,
     url: str,
     result_type: str,
     state: dict[str, Any],
@@ -195,6 +201,7 @@ def _candidate_row(
         "观察条件": _observation_condition(candidate_type, topic, stock_name, suggestion),
         "放弃条件": _abandon_condition(risk_tags, suggestion),
         "相关新闻标题": news_title,
+        "发布时间": publish_time or "时间未知",
         "原始链接": url,
         "备注": f"{result_type}；更新时间：{state.get('last_update_time', '暂无')}",
     }
@@ -326,6 +333,8 @@ def _merge_row(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
         merged[field] = str(max(_int(left.get(field)), _int(right.get(field))))
     for field in ["信息来源", "风险标签", "相关新闻标题", "原始链接", "备注"]:
         merged[field] = _merge_text(left.get(field, ""), right.get(field, ""))
+    if not merged.get("发布时间") or merged.get("发布时间") == "时间未知":
+        merged["发布时间"] = right.get("发布时间", merged.get("发布时间", ""))
     if _suggestion_rank(right.get("观察建议", "")) < _suggestion_rank(left.get("观察建议", "")):
         merged["观察建议"] = right.get("观察建议", merged.get("观察建议", ""))
         merged["观察条件"] = right.get("观察条件", merged.get("观察条件", ""))
@@ -343,6 +352,13 @@ def _merge_text(left: str, right: str) -> str:
             if text and text not in values and text != "无":
                 values.append(text)
     return "；".join(values[:4]) if values else "无"
+
+
+def _compress_field(field: str, value: object) -> str:
+    text = str(value or "")
+    if field not in {"观察条件", "放弃条件", "备注", "市场信号"}:
+        return text
+    return _merge_text(text, "")
 
 
 def _sort_key(row: dict[str, str]) -> tuple[int, int, int, str]:

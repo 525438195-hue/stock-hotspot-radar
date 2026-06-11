@@ -42,6 +42,7 @@ SOURCE_TYPE_LABELS = {
     "guba": "社媒情绪",
     "screenshot": "社媒情绪",
     "market_data": "行情数据",
+    "fallback": "fallback",
     "unknown": "未知来源",
 }
 
@@ -532,13 +533,66 @@ def _coverage_source_status_lines(values: object) -> list[str]:
         source_type = _source_type_label(item.get("source_type"))
         enabled_text = "启用" if item.get("enabled", True) else "停用"
         priority_text = str(item.get("priority", ""))
-        status = str(item.get("status", ""))
-        status_text = {"success": "成功", "failed": "失败", "skipped": "跳过"}.get(status, status or "未知")
+        status = _coverage_status(item)
+        status_text = {
+            "success": "成功",
+            "failed": "失败",
+            "timeout": "超时",
+            "skipped": "跳过",
+            "placeholder": "占位源",
+            "fallback": "fallback",
+        }.get(status, status or "未知")
         reason = _short_text(_safe_text(item.get("reason") or item.get("warning") or ""), 140)
         lines.append(
             f"  - {source_name}｜{source_type}｜{enabled_text}｜优先级 {priority_text}｜{status_text}｜{reason}"
         )
     return lines
+
+
+def _coverage_status(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "").strip()
+    reason = str(item.get("reason") or item.get("warning") or "")
+    if status in {"success", "failed", "timeout", "skipped", "placeholder", "fallback"}:
+        return status
+    if "占位源" in reason or "未接入真实接口" in reason:
+        return "placeholder"
+    if "未启用" in reason or "未配置" in reason or "URL 为空" in reason:
+        return "skipped"
+    if item.get("success"):
+        return "success"
+    return "failed"
+
+
+def _coverage_sources_by_status(values: object, target_status: str) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    names = []
+    for item in values:
+        if isinstance(item, dict) and _coverage_status(item) == target_status:
+            names.append(_safe_text(item.get("source_name") or item.get("source") or "未命名数据源"))
+    return names
+
+
+def _coverage_enabled_success_rate(values: object) -> str:
+    if not isinstance(values, list):
+        return "暂无启用数据源"
+    active = [item for item in values if isinstance(item, dict) and _coverage_status(item) in {"success", "failed", "timeout"}]
+    if not active:
+        return "暂无启用数据源"
+    success_count = sum(1 for item in active if _coverage_status(item) == "success")
+    return f"{success_count / len(active) * 100:.0f}%"
+
+
+def _coverage_tavily_count(values: object) -> int:
+    if not isinstance(values, list):
+        return 0
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("source_name") or item.get("source") or "")
+        if "Tavily" in name:
+            return int(item.get("item_count", 0) or item.get("count", 0) or 0)
+    return 0
 
 
 def _short_text(text: str, max_len: int) -> str:
@@ -554,29 +608,34 @@ def _append_coverage_section(lines: list[str], market_data: dict[str, Any]) -> N
 
     official_checked = _coverage_list(coverage.get("official_sources_checked"), "未配置或未返回官方源核验结果")
     warnings = _coverage_list(coverage.get("warnings"), "无")
-    timeout_sources = _coverage_list(coverage.get("timeout_sources"), "无")
+    source_status = coverage.get("source_status")
+    skipped_sources = _coverage_list(_coverage_sources_by_status(source_status, "skipped"), "无")
+    placeholder_sources = _coverage_list(_coverage_sources_by_status(source_status, "placeholder"), "无")
+    timeout_sources = _coverage_list(_coverage_sources_by_status(source_status, "timeout"), "无")
     fallback_usage = _coverage_list(coverage.get("fallback_usage"), "未使用 fallback")
     lines.extend(
         [
             "## 数据覆盖范围",
             "",
             "> 本报告不代表全网穷尽搜索，仅代表已配置数据源范围内的自动检索和交叉验证结果。",
+            "> 未启用源、占位源、RSS URL 为空的数据源不计入启用源成功率。",
             "",
-            f"- 今日搜索关键词数量：{coverage.get('searched_queries_count', 0)}",
-            f"- 成功数据源：{_coverage_list(coverage.get('successful_sources'))}",
-            f"- 失败数据源：{_coverage_list(coverage.get('failed_sources'))}",
-            f"- 超时数据源：{timeout_sources}",
-            f"- 跳过数据源：{_coverage_list(coverage.get('skipped_sources'))}",
-            f"- fallback 使用情况：{fallback_usage}",
+            f"- 启用源成功率：{_coverage_enabled_success_rate(source_status)}",
+            f"- Tavily 返回结果：{_coverage_tavily_count(source_status)}",
+            f"- 去重后结果：{coverage.get('deduped_results_count', 0)}",
+            f"- 高质量新闻：{coverage.get('high_quality_news_count', 0)}",
+            f"- 使用 fallback：{fallback_usage}",
+            f"- 跳过源：{skipped_sources}",
+            f"- 占位源：{placeholder_sources}",
+            f"- 超时源：{timeout_sources}",
             f"- 独立域名数量：{coverage.get('unique_domains_count', 0)}",
             f"- 原始候选结果数量：{coverage.get('raw_results_count', 0)}",
-            f"- 去重后候选结果数量：{coverage.get('deduped_results_count', 0)}",
             f"- 来源类型覆盖：{_coverage_source_type_text(coverage.get('source_type_coverage'))}",
             f"- 官方源核验情况：{official_checked}",
             f"- 重要警告：{warnings}",
         ]
     )
-    lines.extend(_coverage_source_status_lines(coverage.get("source_status")))
+    lines.extend(_coverage_source_status_lines(source_status))
     lines.append("")
 
 

@@ -39,6 +39,10 @@ def _is_stale(publish_time: str, as_of: str | None = None, max_age_days: int = 7
         current = datetime.now(tz=published.tzinfo) if published.tzinfo else datetime.now()
     if current is None:
         return False
+    if current.tzinfo is not None and published.tzinfo is None:
+        published = published.replace(tzinfo=current.tzinfo)
+    elif current.tzinfo is None and published.tzinfo is not None:
+        current = current.replace(tzinfo=published.tzinfo)
     return (current - published).days > max_age_days
 
 

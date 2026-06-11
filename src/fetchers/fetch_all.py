@@ -39,6 +39,7 @@ def fetch_all(
             _log(f"成功：获取 {len(manual_events)} 条")
             warnings.append("联网新闻与搜索候选为空，已回退到 manual_news.csv")
             fallback_usage.append("manual_news.csv")
+            source_status.append(_fallback_status("manual_news.csv", "fallback", len(manual_events), "兜底新闻数据"))
         else:
             _log("失败：原因 manual_news.csv 没有有效数据，已跳过")
             warnings.append("联网新闻与搜索候选为空，manual_news.csv 也没有有效数据")
@@ -55,6 +56,7 @@ def fetch_all(
             _log(f"成功：获取 {len(manual_announcements)} 条")
             warnings.append("公告源读取失败或为空，已回退到 manual_announcements.csv")
             fallback_usage.append("manual_announcements.csv")
+            source_status.append(_fallback_status("manual_announcements.csv", "fallback", len(manual_announcements), "兜底公告数据"))
         else:
             _log("失败：原因 manual_announcements.csv 没有有效数据，已跳过")
             warnings.append("公告源读取失败或为空，manual_announcements.csv 也没有有效数据")
@@ -75,6 +77,7 @@ def fetch_all(
             _log(f"成功：获取 {len(manual_market.get('sectors', []))} 条")
             warnings.append("行情源读取失败或为空，已回退到 manual_market.csv")
             fallback_usage.append("manual_market.csv")
+            source_status.append(_fallback_status("manual_market.csv", "fallback", len(manual_market.get("sectors", [])), "兜底行情数据"))
         else:
             _log("失败：原因 manual_market.csv 没有有效数据，已跳过")
             warnings.append("行情源读取失败或为空，manual_market.csv 也没有有效数据")
@@ -101,6 +104,9 @@ def fetch_all(
         market_data["coverage_report"]["skipped_sources"] = [
             str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "skipped"
         ]
+        market_data["coverage_report"]["placeholder_sources"] = [
+            str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "placeholder"
+        ]
         market_data["coverage_report"]["timeout_sources"] = [
             str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "timeout"
         ]
@@ -120,8 +126,13 @@ def _fetch_search_events(
         warnings.append("auto 流程已超过 90 秒，停止联网搜索")
         return [], {}
     search_keywords = sources_config.get("search", {}).get("base_keywords") or DEFAULT_SEARCH_KEYWORDS
+    query_start = time.perf_counter()
     queries = QueryBuilder([str(keyword) for keyword in search_keywords]).build()
+    query_build_seconds = time.perf_counter() - query_start
     result = SearchFetcher(queries, sources_config, data_dir.parent, deadline=deadline).safe_fetch()
+    result.setdefault("coverage", {})
+    result["coverage"].setdefault("refresh_timing", {})
+    result["coverage"]["refresh_timing"]["query_build_seconds"] = round(query_build_seconds, 3)
 
     for status in result.get("source_status", []):
         source_status.append(_search_status_row(status))
@@ -147,9 +158,12 @@ def _fetch_social_events(
             source_status.append(status_from_record(record, status="timeout", reason="超时：auto 流程已超过 90 秒，已切换 fallback", item_count=0))
             _log("超时：已切换 fallback")
             continue
-        if record["status"] == "skipped":
+        if record["status"] in {"skipped", "placeholder"}:
             source_status.append(status_from_record(record, item_count=0))
-            _log(f"失败：原因 {record.get('reason', '已跳过')}，已跳过")
+            if record["status"] == "placeholder":
+                _log(f"占位源：{record.get('reason', '未接入真实接口')}")
+            else:
+                _log(f"失败：原因 {record.get('reason', '已跳过')}，已跳过")
             continue
         result = SocialSentimentFetcher([record], data_dir.parent).safe_fetch()
         source_status.append(_status_row(result, record))
@@ -176,9 +190,12 @@ def _fetch_announcements(
             source_status.append(status_from_record(record, status="timeout", reason="超时：auto 流程已超过 90 秒，已切换 fallback", item_count=0))
             _log("超时：已切换 fallback")
             continue
-        if record["status"] == "skipped":
+        if record["status"] in {"skipped", "placeholder"}:
             source_status.append(status_from_record(record, item_count=0))
-            _log(f"失败：原因 {record.get('reason', '已跳过')}，已跳过")
+            if record["status"] == "placeholder":
+                _log(f"占位源：{record.get('reason', '未接入真实接口')}")
+            else:
+                _log(f"失败：原因 {record.get('reason', '已跳过')}，已跳过")
             continue
         result = AnnouncementFetcher([record]).safe_fetch()
         source_status.append(_status_row(result, record))
@@ -276,6 +293,22 @@ def _search_status_row(status: dict[str, Any]) -> dict[str, Any]:
         "reason": status.get("reason", status.get("warning", "")),
         "source": status.get("source", status.get("source_name", "")),
         "warning": status.get("warning", status.get("reason", "")),
+    }
+
+
+def _fallback_status(source_name: str, source_type: str, item_count: int, note: str) -> dict[str, Any]:
+    return {
+        "source_name": source_name,
+        "source_type": source_type,
+        "enabled": True,
+        "priority": 100,
+        "success": False,
+        "status": "fallback",
+        "item_count": int(item_count),
+        "reason": "",
+        "source": source_name,
+        "warning": "",
+        "note": note,
     }
 
 

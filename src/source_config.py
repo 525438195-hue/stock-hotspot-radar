@@ -215,7 +215,7 @@ def _official_records(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
         source_name = str(source.get("name") or f"官方公告源{index}")
         status, reason = _base_status(source)
         if status == "success" and str(source.get("mode", "")).strip() == "placeholder":
-            status, reason = "skipped", "跳过：占位源，未接入公开接口"
+            status, reason = "placeholder", "占位源，未接入真实接口"
         elif status == "success" and not str(source.get("url", "")).strip():
             status, reason = "skipped", "跳过：未配置 URL"
         records.append(

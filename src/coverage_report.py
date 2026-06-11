@@ -31,6 +31,8 @@ def build_coverage_report(
         "failed_sources": [_status_name(status) for status in source_status if status.get("status") == "failed"],
         "timeout_sources": [_status_name(status) for status in source_status if status.get("status") == "timeout"],
         "skipped_sources": [_status_name(status) for status in source_status if status.get("status") == "skipped"],
+        "placeholder_sources": [_status_name(status) for status in source_status if status.get("status") == "placeholder"],
+        "fallback_sources": [_status_name(status) for status in source_status if status.get("status") == "fallback"],
         "source_type_coverage": dict(source_type_counts),
         "unique_domains_count": len(domains),
         "raw_results_count": len(raw_results),

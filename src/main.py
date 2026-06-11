@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def run_pipeline(mode: str = "sample") -> dict[str, Path]:
+    total_start = time.perf_counter()
+    refresh_timing: dict[str, float] = {
+        "total_seconds": 0.0,
+        "query_build_seconds": 0.0,
+        "tavily_fetch_seconds": 0.0,
+        "filter_seconds": 0.0,
+        "candidate_build_seconds": 0.0,
+        "news_summary_seconds": 0.0,
+        "write_output_seconds": 0.0,
+    }
     ensure_runtime_dirs(PROJECT_ROOT)
     sources_config = load_source_config(PROJECT_ROOT)
     scoring_rules = load_config(PROJECT_ROOT / "config" / "scoring_rules.yaml")
@@ -93,8 +104,15 @@ def run_pipeline(mode: str = "sample") -> dict[str, Path]:
             },
         ]
 
+    coverage_timing = {}
+    if isinstance(market_data.get("coverage_report"), dict):
+        coverage_timing = dict(market_data.get("coverage_report", {}).get("refresh_timing", {}) or {})
+    for key in ("query_build_seconds", "tavily_fetch_seconds", "filter_seconds"):
+        refresh_timing[key] = float(coverage_timing.get(key, 0.0) or 0.0)
+
     deduped_events = dedupe_events(events)
     scored_events = score_events(deduped_events, announcements, market_data, sources_config, scoring_rules)
+    write_start = time.perf_counter()
     files = generate_outputs(
         scored_events,
         announcements,
@@ -102,6 +120,7 @@ def run_pipeline(mode: str = "sample") -> dict[str, Path]:
         sources_config,
         PROJECT_ROOT / "outputs",
     )
+    refresh_timing["write_output_seconds"] = round(time.perf_counter() - write_start, 3)
 
     risk_count = sum(len(event["risk_flags"]) for event in scored_events)
     risk_announcement_count = sum(1 for announcement in announcements if announcement_risk_flags(announcement))
@@ -111,8 +130,17 @@ def run_pipeline(mode: str = "sample") -> dict[str, Path]:
         if int(event.get("confidence_score", 0)) >= 60
         and event.get("verification_status") not in {"rumor", "contradicted", "stale"}
     )
+    candidate_start = time.perf_counter()
+    files["stock_candidates"] = build_stock_candidates(PROJECT_ROOT / "outputs", data_dir, market_data)
+    refresh_timing["candidate_build_seconds"] = round(time.perf_counter() - candidate_start, 3)
+    summary_start = time.perf_counter()
+    files["news_summary"] = write_news_summary(PROJECT_ROOT / "outputs")
+    refresh_timing["news_summary_seconds"] = round(time.perf_counter() - summary_start, 3)
+    stock_candidate_count = _csv_row_count(PROJECT_ROOT / "outputs" / "stock_candidates.csv")
+
     state_file = PROJECT_ROOT / "outputs" / "report_state.json"
     files["report_state"] = state_file
+    refresh_timing["total_seconds"] = round(time.perf_counter() - total_start, 3)
     save_report_state(
         state_file,
         mode=mode,
@@ -124,9 +152,9 @@ def run_pipeline(mode: str = "sample") -> dict[str, Path]:
         source_status=source_status,
         warnings=warnings,
         coverage_report=market_data.get("coverage_report", {}),
+        stock_candidate_count=stock_candidate_count,
+        refresh_timing=refresh_timing,
     )
-    files["stock_candidates"] = build_stock_candidates(PROJECT_ROOT / "outputs", data_dir, market_data)
-    files["news_summary"] = write_news_summary(PROJECT_ROOT / "outputs")
 
     print(f"A股热点情报筛选系统已完成 {mode} 模式流程。")
     if market_data.get("empty_message"):
@@ -199,10 +227,15 @@ def _topic_from_query(query: str) -> str:
 
 def save_report_state(path: Path, **state: Any) -> None:
     source_status = list(state.get("source_status", []))
-    active_sources = [item for item in source_status if item.get("status") in {"success", "failed", "timeout"}]
-    success_count = sum(1 for item in active_sources if item.get("success") or item.get("status") == "success")
-    source_success_rate = round(success_count / len(active_sources), 4) if active_sources else 0.0
     coverage_report = dict(state.get("coverage_report", {}) or {})
+    source_status_table = _source_status_table(source_status)
+    enabled_source_success_rate = _enabled_source_success_rate(source_status_table)
+    source_success_rate = enabled_source_success_rate if enabled_source_success_rate is not None else 0.0
+    fallback_used = [row["source_name"] for row in source_status_table if row["status"] == "fallback"]
+    tavily_result_count = _tavily_result_count(source_status_table)
+    deduped_result_count = int(coverage_report.get("deduped_results_count", 0) or coverage_report.get("deduped_result_count", 0) or 0)
+    high_quality_news_count = int(coverage_report.get("high_quality_news_count", 0) or 0)
+    refresh_timing = _refresh_timing(state.get("refresh_timing", {}))
     payload = {
         "last_update_time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": state.get("mode", ""),
@@ -212,16 +245,118 @@ def save_report_state(path: Path, **state: Any) -> None:
         "risk_announcement_count": int(state.get("risk_announcement_count", 0)),
         "risk_count": int(state.get("risk_count", 0)),
         "source_success_rate": source_success_rate,
+        "enabled_source_success_rate": enabled_source_success_rate,
         "source_status": source_status,
+        "source_status_table": source_status_table,
+        "tavily_result_count": tavily_result_count,
+        "deduped_result_count": deduped_result_count,
+        "high_quality_news_count": high_quality_news_count,
+        "stock_candidate_count": int(state.get("stock_candidate_count", 0)),
+        "refresh_timing": refresh_timing,
+        "fallback_used": fallback_used,
         "successful_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "success"],
         "failed_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "failed"],
         "timeout_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "timeout"],
-        "fallback_usage": list(coverage_report.get("fallback_usage", [])),
+        "fallback_usage": fallback_used or list(coverage_report.get("fallback_usage", [])),
         "warnings": list(state.get("warnings", [])),
         "coverage_report": coverage_report,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _source_status_table(source_status: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in source_status:
+        status = _normalized_source_status(item)
+        source_name = str(item.get("source_name") or item.get("source") or "")
+        source_type = str(item.get("source_type") or "unknown")
+        key = (source_name, status)
+        if key in seen:
+            continue
+        seen.add(key)
+        counted = status in {"success", "failed", "timeout"}
+        reason = str(item.get("reason") or item.get("warning") or "")
+        rows.append(
+            {
+                "source_name": source_name,
+                "source_type": source_type,
+                "status": status,
+                "count": int(item.get("item_count", 0) or 0),
+                "counted_in_success_rate": counted,
+                "reason": reason or "无",
+                "note": _source_note(item, status),
+            }
+        )
+    return rows
+
+
+def _refresh_timing(value: object) -> dict[str, float]:
+    keys = [
+        "total_seconds",
+        "query_build_seconds",
+        "tavily_fetch_seconds",
+        "filter_seconds",
+        "candidate_build_seconds",
+        "news_summary_seconds",
+        "write_output_seconds",
+    ]
+    timing = value if isinstance(value, dict) else {}
+    return {key: round(float(timing.get(key, 0.0) or 0.0), 3) for key in keys}
+
+
+def _normalized_source_status(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "").strip()
+    reason = str(item.get("reason") or item.get("warning") or "")
+    if status in {"success", "failed", "timeout", "skipped", "placeholder", "fallback"}:
+        return status
+    if "占位源" in reason or "未接入真实接口" in reason:
+        return "placeholder"
+    if "未启用" in reason or "未配置" in reason or "URL 为空" in reason:
+        return "skipped"
+    if item.get("success"):
+        return "success"
+    return "failed"
+
+
+def _source_note(item: dict[str, Any], status: str) -> str:
+    source_name = str(item.get("source_name") or item.get("source") or "")
+    if status == "placeholder":
+        return "未接入真实接口"
+    if status == "skipped":
+        return "未启用或配置不完整，不计入成功率"
+    if status == "fallback":
+        return str(item.get("note") or "兜底数据")
+    if "Tavily" in source_name:
+        return "主搜索源"
+    if status == "timeout":
+        return "超时，若有 fallback 会单独显示"
+    if status == "failed":
+        return "启用源请求失败，计入成功率"
+    return "启用源成功返回有效数据"
+
+
+def _enabled_source_success_rate(rows: list[dict[str, Any]]) -> float | None:
+    active = [row for row in rows if row.get("counted_in_success_rate")]
+    if not active:
+        return None
+    success_count = sum(1 for row in active if row.get("status") == "success")
+    return round(success_count / len(active), 4)
+
+
+def _tavily_result_count(rows: list[dict[str, Any]]) -> int:
+    for row in rows:
+        if "Tavily" in str(row.get("source_name", "")):
+            return int(row.get("count", 0) or 0)
+    return 0
+
+
+def _csv_row_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return sum(1 for _ in csv.DictReader(file))
 
 
 def main(argv: list[str] | None = None) -> dict[str, Path]:
