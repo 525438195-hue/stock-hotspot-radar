@@ -1,0 +1,123 @@
+[
+  {
+    "event_id": "E001",
+    "title": "低空经济示范区配套政策发布",
+    "content": "某省发布低空经济示范区配套政策，提出完善空域协同、通航基础设施和应急服务体系。",
+    "topic_hint": "低空经济",
+    "tickers": [],
+    "source": "省级发改委模拟站",
+    "source_type": "policy_file",
+    "publish_time": "2026-06-08T09:15:00+08:00",
+    "url": "https://example.com/policy/low-altitude-20260608"
+  },
+  {
+    "event_id": "E002",
+    "title": "多地推进低空基础设施项目储备",
+    "content": "行业媒体统计，多地近期披露低空基础设施项目储备，涉及起降点、通信导航和空域管理配套。",
+    "topic_hint": "低空经济",
+    "tickers": [],
+    "source": "行业观察模拟网",
+    "source_type": "industry_media",
+    "publish_time": "2026-06-08T10:20:00+08:00",
+    "url": "https://example.com/industry/low-altitude-projects"
+  },
+  {
+    "event_id": "E003",
+    "title": "网传云航科技参与低空管制系统订单",
+    "content": "社媒流传云航科技可能参与低空管制系统订单，尚未看到公司公告或交易所披露。",
+    "topic_hint": "低空经济",
+    "tickers": ["000001.SZ"],
+    "source": "社媒模拟账号",
+    "source_type": "social_media",
+    "publish_time": "2026-06-08T11:05:00+08:00",
+    "url": "https://example.com/social/yunhang-rumor"
+  },
+  {
+    "event_id": "E004",
+    "title": "AI算力板块成交额明显放大",
+    "content": "行情数据显示，AI算力板块成交额较上一交易日明显放大，服务器和数据中心方向活跃。",
+    "topic_hint": "AI算力",
+    "tickers": [],
+    "source": "模拟行情终端",
+    "source_type": "market_data",
+    "publish_time": "2026-06-08T14:50:00+08:00",
+    "url": "https://example.com/market/ai-compute"
+  },
+  {
+    "event_id": "E005",
+    "title": "股吧流传某算力公司大额订单截图",
+    "content": "股吧出现某算力公司大额订单截图，截图未显示可核验合同编号或公告链接。",
+    "topic_hint": "AI算力",
+    "tickers": ["300100.SZ"],
+    "source": "股吧模拟帖",
+    "source_type": "guba",
+    "publish_time": "2026-06-08T13:30:00+08:00",
+    "url": "https://example.com/guba/compute-order-screenshot"
+  },
+  {
+    "event_id": "E006",
+    "title": "机器人板块涨停数量增加",
+    "content": "行情数据显示，机器人板块内涨停数量增加，减速器、关节模组和人形机器人方向活跃。",
+    "topic_hint": "机器人",
+    "tickers": [],
+    "source": "模拟行情终端",
+    "source_type": "market_data",
+    "publish_time": "2026-06-08T15:05:00+08:00",
+    "url": "https://example.com/market/robotics-limit-up"
+  },
+  {
+    "event_id": "E007",
+    "title": "天工机器人收到交易所监管函",
+    "content": "交易所披露天工机器人收到监管函，要求说明近期热点概念披露是否准确、是否存在误导性陈述。",
+    "topic_hint": "机器人",
+    "tickers": ["688200.SH"],
+    "source": "交易所模拟披露",
+    "source_type": "exchange_disclosure",
+    "publish_time": "2026-06-08T18:40:00+08:00",
+    "url": "https://example.com/exchange/tiangong-letter"
+  },
+  {
+    "event_id": "E008",
+    "title": "星源储能披露储能项目合同",
+    "content": "星源储能公告称，公司签署储能项目合同，合同金额占最近一期营业收入比例较高。",
+    "topic_hint": "新能源",
+    "tickers": ["002300.SZ"],
+    "source": "上市公司模拟公告",
+    "source_type": "official_announcement",
+    "publish_time": "2026-06-08T19:10:00+08:00",
+    "url": "https://example.com/announcement/xingyuan-contract"
+  },
+  {
+    "event_id": "E009",
+    "title": "半导体设备国产替代线索升温",
+    "content": "主流财经媒体报道，半导体设备国产替代方向受到资金关注，光刻、刻蚀和检测环节讨论度提升。",
+    "topic_hint": "半导体",
+    "tickers": [],
+    "source": "财经媒体模拟网",
+    "source_type": "mainstream_media",
+    "publish_time": "2026-06-08T12:00:00+08:00",
+    "url": "https://example.com/news/semiconductor-equipment"
+  },
+  {
+    "event_id": "E010",
+    "title": "截图称某医药公司存在并购事项",
+    "content": "聊天截图称某医药公司存在并购事项，但截图没有原始出处、公告编号或监管披露链接。",
+    "topic_hint": "医药",
+    "tickers": ["600500.SH"],
+    "source": "聊天截图模拟源",
+    "source_type": "screenshot",
+    "publish_time": "2026-06-08T16:15:00+08:00",
+    "url": "https://example.com/screenshot/pharma-ma"
+  },
+  {
+    "event_id": "E011",
+    "title": "数据要素政策征求意见稿引发关注",
+    "content": "政策文件征求意见稿提到推进公共数据授权运营、数据流通基础制度和数据安全评估。",
+    "topic_hint": "数据要素",
+    "tickers": [],
+    "source": "政策文件模拟站",
+    "source_type": "policy_file",
+    "publish_time": "2026-06-07T17:20:00+08:00",
+    "url": "https://example.com/policy/data-factor-draft"
+  }
+]

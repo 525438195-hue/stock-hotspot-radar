@@ -1,0 +1,232 @@
+source_types:
+  government_policy:
+    label: 政策文件
+    base_confidence: 92
+    priority: 1
+    evidence_role: confirmed_fact
+  policy_file:
+    label: 政策文件
+    base_confidence: 92
+    priority: 1
+    evidence_role: confirmed_fact
+  official_announcement:
+    label: 公司公告
+    base_confidence: 90
+    priority: 1
+    evidence_role: confirmed_fact
+  exchange_announcement:
+    label: 交易所公告
+    base_confidence: 95
+    priority: 1
+    evidence_role: confirmed_fact
+  exchange_disclosure:
+    label: 交易所披露
+    base_confidence: 95
+    priority: 1
+    evidence_role: confirmed_fact
+  financial_news:
+    label: 财经媒体
+    base_confidence: 72
+    priority: 2
+    evidence_role: inference
+  mainstream_media:
+    label: 财经媒体
+    base_confidence: 72
+    priority: 2
+    evidence_role: inference
+  industry_news:
+    label: 行业媒体
+    base_confidence: 64
+    priority: 2
+    evidence_role: inference
+  industry_media:
+    label: 行业媒体
+    base_confidence: 64
+    priority: 2
+    evidence_role: inference
+  market_data:
+    label: 行情数据
+    base_confidence: 68
+    priority: 2
+    evidence_role: market_reaction
+  search_api:
+    label: 搜索API
+    base_confidence: 50
+    priority: 3
+    evidence_role: inference
+  overseas_news:
+    label: 海外新闻
+    base_confidence: 55
+    priority: 3
+    evidence_role: inference
+  social_sentiment:
+    label: 社媒情绪
+    base_confidence: 35
+    priority: 5
+    evidence_role: unverified_rumor
+  social_media:
+    label: 社媒
+    base_confidence: 35
+    priority: 5
+    evidence_role: unverified_rumor
+  guba:
+    label: 股吧
+    base_confidence: 28
+    priority: 5
+    evidence_role: unverified_rumor
+  screenshot:
+    label: 截图
+    base_confidence: 20
+    priority: 5
+    evidence_role: unverified_rumor
+  unknown:
+    label: 未知来源
+    base_confidence: 0
+    priority: 99
+    evidence_role: inference
+
+highest_priority_source_types:
+  - government_policy
+  - policy_file
+  - exchange_announcement
+  - exchange_disclosure
+  - official_announcement
+
+sentiment_only_source_types:
+  - social_sentiment
+  - social_media
+  - guba
+  - screenshot
+
+search:
+  base_keywords:
+    - AI算力
+    - 机器人
+    - 低空经济
+    - 半导体
+    - 军工
+    - 数据要素
+    - 消费电子
+    - 新能源
+    - 医药
+    - 证券
+  max_results_per_query: 3
+  max_queries_per_run: 12
+
+tavily_search:
+  max_results_per_query: 3
+  search_depth: basic
+  country: china
+  include_domains:
+    - eastmoney.com
+    - finance.eastmoney.com
+    - stock.eastmoney.com
+    - cls.cn
+    - stcn.com
+    - cnstock.com
+    - cs.com.cn
+    - sse.com.cn
+    - szse.cn
+    - cninfo.com.cn
+    - 10jqka.com.cn
+    - hexun.com
+    - jrj.com.cn
+    - yicai.com
+  exclude_domains:
+    - wikipedia.org
+    - zh.wikipedia.org
+    - cloudflare.com
+    - abb.com
+    - google.com
+    - youtube.com
+    - facebook.com
+    - reddit.com
+    - medium.com
+    - zhihu.com
+    - baike.baidu.com
+
+search_sources:
+  tavily:
+    enabled: true
+    source_type: 搜索API
+    priority: 3
+    api_key_env: TAVILY_API_KEY
+
+  google_cse:
+    enabled: false
+    source_type: 搜索API
+    priority: 3
+    api_key_env: GOOGLE_API_KEY
+    cse_id_env: GOOGLE_CSE_ID
+
+  newsapi:
+    enabled: false
+    source_type: 海外新闻
+    priority: 3
+    api_key_env: NEWSAPI_KEY
+
+rss_sources:
+  - name: 东方财富财经
+    enabled: true
+    source_type: 财经媒体
+    priority: 2
+    url: ""
+    tags: ["A股", "财经", "热点"]
+
+  - name: 财联社
+    enabled: true
+    source_type: 财经媒体
+    priority: 2
+    url: ""
+    tags: ["A股", "快讯", "题材"]
+
+  - name: 证券时报
+    enabled: true
+    source_type: 财经媒体
+    priority: 2
+    url: ""
+    tags: ["政策", "证券", "A股"]
+
+official_sources:
+  - name: 巨潮资讯
+    enabled: true
+    source_type: 公司公告
+    priority: 1
+    mode: placeholder
+
+  - name: 上交所公告
+    enabled: true
+    source_type: 交易所公告
+    priority: 1
+    mode: placeholder
+
+  - name: 深交所公告
+    enabled: true
+    source_type: 交易所公告
+    priority: 1
+    mode: placeholder
+
+market_sources:
+  akshare:
+    enabled: true
+    source_type: 行情数据
+    priority: 2
+    fallback: manual_market
+
+social_sources:
+  manual_rumors:
+    enabled: true
+    source_type: 社媒情绪
+    priority: 5
+    file: data/manual_rumors.csv
+
+  douyin_search:
+    enabled: false
+    source_type: 社媒情绪
+    priority: 5
+    mode: search_engine_indirect
+    query_templates:
+      - "site:douyin.com {keyword} A股"
+      - "site:douyin.com {keyword} 涨停"
+      - "site:douyin.com {keyword} 小道消息"
+      - "site:douyin.com {keyword} 产业链"

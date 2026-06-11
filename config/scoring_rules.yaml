@@ -1,0 +1,75 @@
+{
+  "score_bounds": {
+    "min": 0,
+    "max": 100
+  },
+  "base_scores": {
+    "official_announcement": 40,
+    "exchange_announcement": 40,
+    "government_policy": 40,
+    "financial_news": 25,
+    "industry_news": 15,
+    "social_sentiment": 5,
+    "unknown": 0
+  },
+  "source_type_aliases": {
+    "official_announcement": "official_announcement",
+    "company_announcement": "official_announcement",
+    "exchange_announcement": "exchange_announcement",
+    "exchange_disclosure": "exchange_announcement",
+    "government_policy": "government_policy",
+    "policy_file": "government_policy",
+    "financial_news": "financial_news",
+    "mainstream_media": "financial_news",
+    "search_api": "financial_news",
+    "overseas_news": "financial_news",
+    "industry_news": "industry_news",
+    "industry_media": "industry_news",
+    "social_sentiment": "social_sentiment",
+    "social_media": "social_sentiment",
+    "guba": "social_sentiment",
+    "screenshot": "social_sentiment",
+    "market_data": "unknown",
+    "政策文件": "government_policy",
+    "公司公告": "official_announcement",
+    "交易所公告": "exchange_announcement",
+    "财经媒体": "financial_news",
+    "行业媒体": "industry_news",
+    "搜索API": "financial_news",
+    "海外新闻": "financial_news",
+    "社媒情绪": "social_sentiment",
+    "行情数据": "unknown"
+  },
+  "bonuses": {
+    "independent_sources_2_or_more": 15,
+    "official_confirmation": 20,
+    "market_volume_confirmed": 15,
+    "sector_strength_confirmed": 15,
+    "policy_continuity": 10
+  },
+  "penalties": {
+    "social_only": 30,
+    "old_news": 25,
+    "title_body_mismatch": 20,
+    "company_denial": 50,
+    "reduction_announcement": 30,
+    "regulatory_warning": 30,
+    "high_position_chasing_risk": 20
+  },
+  "market_thresholds": {
+    "market_volume_confirmed_turnover_change_pct": 20.0,
+    "sector_strength_change_pct": 3.0,
+    "sector_strength_limit_up_count": 5,
+    "high_position_change_pct": 5.0,
+    "high_position_limit_up_count": 10
+  },
+  "old_news_days": 7,
+  "verification_statuses": [
+    "confirmed",
+    "partially_confirmed",
+    "rumor",
+    "contradicted",
+    "stale",
+    "market_only"
+  ]
+}

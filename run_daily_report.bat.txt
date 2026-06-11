@@ -1,0 +1,8 @@
+@echo off
+cd /d "C:\Users\QYS52\Documents\New project\stock-hotspot-radar"
+
+python src\main.py --mode manual
+
+start notepad outputs\daily_report.md
+
+pause

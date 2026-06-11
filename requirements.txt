@@ -1,0 +1,11 @@
+pytest>=8.0.0
+streamlit
+feedparser
+requests
+beautifulsoup4
+akshare
+pandas
+pyyaml
+apscheduler
+python-dotenv
+opencc-python-reimplemented

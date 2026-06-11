@@ -1,0 +1,62 @@
+[
+  {
+    "announcement_id": "A001",
+    "company": "云航科技",
+    "ticker": "000001.SZ",
+    "title": "云航科技澄清不涉及低空管制系统业务",
+    "content": "公司目前主营业务不涉及低空管制系统，未签署相关订单或框架协议。",
+    "announcement_type": "clarification_no_business",
+    "source": "上市公司模拟公告",
+    "source_type": "official_announcement",
+    "publish_time": "2026-06-08T20:10:00+08:00",
+    "url": "https://example.com/announcement/yunhang-clarification"
+  },
+  {
+    "announcement_id": "A002",
+    "company": "海芯材料",
+    "ticker": "300100.SZ",
+    "title": "海芯材料股东减持计划公告",
+    "content": "持股5%以上股东计划在未来三个月内减持公司股份，减持数量不超过公司总股本的2%。",
+    "announcement_type": "shareholder_reduction",
+    "source": "上市公司模拟公告",
+    "source_type": "official_announcement",
+    "publish_time": "2026-06-08T19:35:00+08:00",
+    "url": "https://example.com/announcement/haixin-reduction"
+  },
+  {
+    "announcement_id": "A003",
+    "company": "天工机器人",
+    "ticker": "688200.SH",
+    "title": "天工机器人收到交易所监管函",
+    "content": "交易所要求公司说明近期涉及机器人热点概念的信息披露是否真实、准确、完整。",
+    "announcement_type": "regulatory_letter",
+    "source": "交易所模拟披露",
+    "source_type": "exchange_disclosure",
+    "publish_time": "2026-06-08T18:40:00+08:00",
+    "url": "https://example.com/exchange/tiangong-letter"
+  },
+  {
+    "announcement_id": "A004",
+    "company": "星源储能",
+    "ticker": "002300.SZ",
+    "title": "星源储能签署储能项目合同",
+    "content": "公司与客户签署储能系统供货合同，合同履行预计对未来经营业绩产生积极影响。",
+    "announcement_type": "positive_business",
+    "source": "上市公司模拟公告",
+    "source_type": "official_announcement",
+    "publish_time": "2026-06-08T19:10:00+08:00",
+    "url": "https://example.com/announcement/xingyuan-contract"
+  },
+  {
+    "announcement_id": "A005",
+    "company": "恒瑞生物",
+    "ticker": "600500.SH",
+    "title": "恒瑞生物半年度业绩预告",
+    "content": "公司预计半年度归母净利润同比增长，主要受创新药销售和费用控制影响。",
+    "announcement_type": "performance_forecast",
+    "source": "上市公司模拟公告",
+    "source_type": "official_announcement",
+    "publish_time": "2026-06-08T21:00:00+08:00",
+    "url": "https://example.com/announcement/hengrui-forecast"
+  }
+]

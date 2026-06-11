@@ -1,0 +1,54 @@
+{
+  "trade_date": "2026-06-08",
+  "sectors": [
+    {
+      "sector": "低空经济",
+      "change_pct": 4.2,
+      "limit_up_count": 8,
+      "turnover_change_pct": 35.5,
+      "turnover_amount_billion": 428.6
+    },
+    {
+      "sector": "AI算力",
+      "change_pct": 3.8,
+      "limit_up_count": 6,
+      "turnover_change_pct": 42.1,
+      "turnover_amount_billion": 612.4
+    },
+    {
+      "sector": "机器人",
+      "change_pct": 5.1,
+      "limit_up_count": 11,
+      "turnover_change_pct": 48.0,
+      "turnover_amount_billion": 389.2
+    },
+    {
+      "sector": "新能源",
+      "change_pct": 1.6,
+      "limit_up_count": 3,
+      "turnover_change_pct": 12.4,
+      "turnover_amount_billion": 501.7
+    },
+    {
+      "sector": "半导体",
+      "change_pct": 2.9,
+      "limit_up_count": 4,
+      "turnover_change_pct": 19.3,
+      "turnover_amount_billion": 566.0
+    },
+    {
+      "sector": "医药",
+      "change_pct": 0.8,
+      "limit_up_count": 1,
+      "turnover_change_pct": 8.4,
+      "turnover_amount_billion": 299.5
+    },
+    {
+      "sector": "数据要素",
+      "change_pct": 3.1,
+      "limit_up_count": 5,
+      "turnover_change_pct": 23.6,
+      "turnover_amount_billion": 211.3
+    }
+  ]
+}
