@@ -211,6 +211,8 @@ def write_news_summary(output_dir: Path) -> Path:
                             "总结等级": result_type or "题材参考",
                         }
                     )
+    if not rows and target_path.exists():
+        return target_path
     with target_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
@@ -237,8 +239,28 @@ def save_report_state(path: Path, **state: Any) -> None:
     high_quality_news_count = int(coverage_report.get("high_quality_news_count", 0) or 0)
     refresh_timing = _refresh_timing(state.get("refresh_timing", {}))
     watchlist_metrics = _watchlist_existing_metrics(PROJECT_ROOT / "outputs")
+    previous_state: dict[str, Any] = {}
+    if path.exists():
+        try:
+            previous_state = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            previous_state = {}
+    now_text = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    tavily_quota_exceeded = bool(coverage_report.get("tavily_quota_exceeded", False))
+    tavily_error_code = str(coverage_report.get("tavily_error_code", "") or "")
+    tavily_error_message = str(coverage_report.get("tavily_error_message", "") or "")
+    estimated_tavily_queries = int(coverage_report.get("estimated_tavily_queries", coverage_report.get("search_queries_count", 0)) or 0)
+    actual_tavily_queries = int(coverage_report.get("actual_tavily_queries", 0) or 0)
+    cache_used = bool(coverage_report.get("cache_used", False))
+    last_refresh_failed = bool(tavily_quota_exceeded or cache_used or (tavily_error_message and actual_tavily_queries > 0))
+    last_refresh_error = tavily_error_message if tavily_error_message else ("本轮未获得新联网结果，已使用缓存" if cache_used else "")
+    last_successful_refresh_time = (
+        str(previous_state.get("last_successful_refresh_time", "") or "")
+        if last_refresh_failed
+        else now_text
+    )
     payload = {
-        "last_update_time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_update_time": now_text,
         "mode": state.get("mode", ""),
         "raw_count": int(state.get("raw_count", 0)),
         "deduped_count": int(state.get("deduped_count", 0)),
@@ -254,6 +276,19 @@ def save_report_state(path: Path, **state: Any) -> None:
         "high_quality_news_count": high_quality_news_count,
         "stock_candidate_count": int(state.get("stock_candidate_count", 0)),
         "refresh_timing": refresh_timing,
+        "tavily_quota_exceeded": tavily_quota_exceeded,
+        "tavily_error_code": tavily_error_code,
+        "tavily_error_message": tavily_error_message,
+        "estimated_tavily_queries": estimated_tavily_queries,
+        "actual_tavily_queries": actual_tavily_queries,
+        "hotspot_estimated_tavily_queries": estimated_tavily_queries,
+        "hotspot_actual_tavily_queries": actual_tavily_queries,
+        "cache_used": cache_used,
+        "last_successful_refresh_time": last_successful_refresh_time,
+        "last_refresh_failed": last_refresh_failed,
+        "last_refresh_error": last_refresh_error,
+        "watchlist_query_limit_applied": bool(previous_state.get("watchlist_query_limit_applied", False)),
+        "hotspot_query_limit_applied": bool(coverage_report.get("hotspot_query_limit_applied", False)),
         **watchlist_metrics,
         "fallback_used": fallback_used,
         "successful_sources": [str(item.get("source_name") or item.get("source") or "") for item in source_status if item.get("status") == "success"],

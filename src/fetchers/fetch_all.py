@@ -36,6 +36,9 @@ def fetch_all(
         _log("正在读取：manual fallback - manual_news.csv")
         manual_events = load_manual_news(data_dir / "manual_news.csv")
         if manual_events:
+            for event in manual_events:
+                event["source_type"] = "fallback"
+                event["verification_status"] = "仅作占位参考"
             _log(f"成功：获取 {len(manual_events)} 条")
             warnings.append("联网新闻与搜索候选为空，已回退到 manual_news.csv")
             fallback_usage.append("manual_news.csv")

@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from coverage_report import build_coverage_report
 from result_quality_filter import annotate_results, retained_results
-from secrets_manager import runtime_secret
+from secrets_manager import runtime_int, runtime_secret
 from source_config import configured_sources, status_from_record
 from text_normalizer import normalize_text_with_flag, normalizer_warning
 from time_utils import format_publish_time, format_publish_time_iso
@@ -55,18 +55,39 @@ class SearchFetcher:
         project_root: Path,
         deadline: float | None = None,
     ) -> None:
+        self.original_query_count = len(queries)
         self.queries = queries
         self.sources_config = sources_config
         self.project_root = project_root
         self.search_config = sources_config.get("search", {})
         self.search_sources = sorted(configured_sources(sources_config, "search_sources"), key=_search_source_order)
         self.tavily_config = dict(sources_config.get("tavily_search", {}))
-        configured_limit = int(self.tavily_config.get("max_results_per_query", self.search_config.get("max_results_per_query", 3)))
-        self.max_results_per_query = max(1, min(configured_limit, 3))
-        max_queries = int(self.search_config.get("max_queries_per_run", 20))
+        configured_limit = _int_value(self.tavily_config.get("max_results_per_query", self.search_config.get("max_results_per_query", 3)), 3)
+        self.max_results_per_query = runtime_int(
+            self.project_root,
+            "TAVILY_MAX_RESULTS_PER_QUERY",
+            configured_limit,
+            min_value=1,
+            max_value=3,
+        )
+        configured_max_queries = _int_value(self.search_config.get("max_queries_per_run", 15), 15)
+        max_queries = runtime_int(
+            self.project_root,
+            "TAVILY_MAX_QUERIES_PER_RUN",
+            configured_max_queries,
+            min_value=1,
+            max_value=15,
+        )
         self.queries = self.queries[: max(1, max_queries)]
         self.deadline = deadline
         self.refresh_timing: dict[str, float] = {}
+        self.hotspot_query_limit_applied = self.original_query_count > len(self.queries)
+        self.estimated_tavily_queries = len(self.queries)
+        self.actual_tavily_queries = 0
+        self.tavily_quota_exceeded = False
+        self.tavily_error_code = ""
+        self.tavily_error_message = ""
+        self.cache_used = False
 
     def safe_fetch(self) -> dict[str, Any]:
         raw_results: list[dict[str, Any]] = []
@@ -127,6 +148,19 @@ class SearchFetcher:
         coverage["high_quality_news_count"] = len([item for item in deduped_results if item.get("result_type") == "高质量新闻"])
         coverage["theme_reference_count"] = len([item for item in deduped_results if item.get("result_type") == "题材参考"])
         coverage["search_queries_count"] = len(self.queries)
+        coverage["tavily_quota_exceeded"] = self.tavily_quota_exceeded
+        coverage["tavily_error_code"] = self.tavily_error_code
+        coverage["tavily_error_message"] = self.tavily_error_message
+        coverage["estimated_tavily_queries"] = self.estimated_tavily_queries
+        coverage["actual_tavily_queries"] = self.actual_tavily_queries
+        coverage["cache_used"] = self.cache_used
+        coverage["hotspot_query_limit_applied"] = self.hotspot_query_limit_applied
+        if self.cache_used:
+            cached_raw_count, cached_deduped_count = _cached_search_counts(self.project_root / "outputs")
+            coverage["raw_results_count"] = cached_raw_count
+            coverage["deduped_results_count"] = cached_deduped_count
+            coverage["deduped_result_count"] = cached_deduped_count
+            coverage["retained_results_count"] = cached_deduped_count
         events = [self._result_to_event(index, result) for index, result in enumerate(retained, start=1)]
 
         return {
@@ -235,6 +269,7 @@ class SearchFetcher:
             _log(f"正在抓取：Tavily 搜索 - {query}")
             try:
                 timeout = self._request_timeout(15)
+                self.actual_tavily_queries += 1
                 response = _post_tavily_with_optional_retry(requests, headers, body, timeout)
             except TimeoutError as exc:
                 reason = str(exc)
@@ -260,6 +295,15 @@ class SearchFetcher:
                 debug_entries.append(_tavily_debug_entry(query, body, "failed", reason=reason))
                 _log(f"Tavily 失败：{query}；异常类型 ConnectionError；状态码 无；返回正文 无")
                 continue
+            if _is_tavily_quota_response(response):
+                reason = _tavily_quota_reason(response)
+                self.tavily_quota_exceeded = True
+                self.tavily_error_code = str(getattr(response, "status_code", "") or "432")
+                self.tavily_error_message = reason
+                warnings.append(f"{query}：{reason}")
+                debug_entries.append(_tavily_debug_entry(query, body, "quota_exceeded", response=response, reason=reason))
+                _log("Tavily 今日额度可能已用尽，停止后续 Tavily 请求。")
+                break
             if response.status_code in {401, 403}:
                 response_text = _short_response_text(response)
                 reason = f"认证失败：请检查 TAVILY_API_KEY；状态码 {response.status_code}；返回正文 {response_text}"
@@ -291,7 +335,19 @@ class SearchFetcher:
                 fallback_body = dict(body)
                 fallback_body.pop("include_domains", None)
                 try:
+                    self.actual_tavily_queries += 1
                     fallback_response = _post_tavily_with_optional_retry(requests, headers, fallback_body, self._request_timeout(15))
+                    if _is_tavily_quota_response(fallback_response):
+                        reason = _tavily_quota_reason(fallback_response)
+                        self.tavily_quota_exceeded = True
+                        self.tavily_error_code = str(getattr(fallback_response, "status_code", "") or "432")
+                        self.tavily_error_message = reason
+                        warnings.append(f"{query}：{reason}")
+                        debug_entries.append(
+                            _tavily_debug_entry(query, fallback_body, "quota_exceeded", response=fallback_response, reason=reason)
+                        )
+                        _log("Tavily 今日额度可能已用尽，停止后续 Tavily 请求。")
+                        break
                     fallback_response.raise_for_status()
                     fallback_payload = fallback_response.json()
                     fallback_results = fallback_payload.get("results", [])
@@ -331,6 +387,8 @@ class SearchFetcher:
         warning = "；".join(warnings)
         if not items and not warning:
             warning = f"返回结果为空：Tavily 已请求 {len(self.queries)} 个查询词但未返回候选"
+        if self.tavily_quota_exceeded and not self.tavily_error_message:
+            self.tavily_error_message = warning
         status = "success" if items else ("timeout" if any("Timeout" in warning or "超时" in warning for warning in warnings) else "failed")
         return {"status": status, "items": items, "warning": warning}
 
@@ -513,8 +571,13 @@ class SearchFetcher:
     ) -> None:
         output_dir = self.project_root / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
-        _write_search_results_csv(output_dir / "search_results_raw.csv", raw_results)
-        _write_search_results_csv(output_dir / "search_results_deduped.csv", deduped_results)
+        raw_path = output_dir / "search_results_raw.csv"
+        deduped_path = output_dir / "search_results_deduped.csv"
+        if not raw_results and not deduped_results and raw_path.exists() and deduped_path.exists():
+            self.cache_used = True
+            return
+        _write_search_results_csv(raw_path, raw_results)
+        _write_search_results_csv(deduped_path, deduped_results)
 
     def _tavily_api_key(self, source: dict[str, Any]) -> str:
         api_key = runtime_secret(self.project_root, "TAVILY_API_KEY")
@@ -576,6 +639,39 @@ def _write_search_results_csv(path: Path, results: list[dict[str, Any]]) -> None
                     "A股相关性分数": result.get("a_share_score", ""),
                 }
             )
+
+
+def _cached_search_counts(output_dir: Path) -> tuple[int, int]:
+    return (
+        _csv_row_count(output_dir / "search_results_raw.csv"),
+        _csv_row_count(output_dir / "search_results_deduped.csv"),
+    )
+
+
+def _csv_row_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return sum(1 for _ in csv.DictReader(file))
+
+
+def _int_value(value: object, default: int) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_tavily_quota_response(response: Any) -> bool:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    text = str(getattr(response, "text", "") or "")
+    return status_code == 432 or "This request exceeds your plan's set usage limit" in text
+
+
+def _tavily_quota_reason(response: Any) -> str:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    response_text = _short_response_text(response)
+    return f"Tavily 今日额度可能已用尽；状态码 {status_code or 432}；返回正文 {response_text}"
 
 
 def _post_tavily_without_env_proxy(requests_module: Any, headers: dict[str, str], body: dict[str, Any], timeout: float) -> Any:

@@ -27,7 +27,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from main import run_pipeline as run_data_pipeline  # noqa: E402
-from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_secrets  # noqa: E402
+from secrets_manager import export_missing_env_from_runtime, get_secret, runtime_int, runtime_secrets  # noqa: E402
 from stock_candidate_builder import POSITIVE_SUGGESTIONS, build_stock_candidates  # noqa: E402
 from time_utils import format_publish_time  # noqa: E402
 from watchlist_monitor import run_watchlist_monitor  # noqa: E402
@@ -179,6 +179,21 @@ def ensure_runtime_dirs() -> None:
 
 def has_tavily_key() -> bool:
     return bool(get_secret("TAVILY_API_KEY", PROJECT_ROOT).strip())
+
+
+def tavily_refresh_limits() -> dict[str, int]:
+    hotspot_queries = runtime_int(PROJECT_ROOT, "TAVILY_MAX_QUERIES_PER_RUN", 15, min_value=1, max_value=15)
+    watchlist_stocks = runtime_int(PROJECT_ROOT, "WATCHLIST_MAX_STOCKS_PER_RUN", 3, min_value=1, max_value=3)
+    watchlist_queries_per_stock = runtime_int(PROJECT_ROOT, "WATCHLIST_MAX_QUERIES_PER_STOCK", 2, min_value=1, max_value=2)
+    watchlist_total_queries = runtime_int(PROJECT_ROOT, "WATCHLIST_MAX_TOTAL_QUERIES", 6, min_value=1, max_value=6)
+    daily_refresh_limit = runtime_int(PROJECT_ROOT, "TAVILY_DAILY_REFRESH_LIMIT", 1, min_value=1)
+    watchlist_estimate = min(watchlist_stocks * watchlist_queries_per_stock, watchlist_total_queries)
+    return {
+        "hotspot_queries": hotspot_queries,
+        "watchlist_estimate": watchlist_estimate,
+        "total_estimate": hotspot_queries + watchlist_estimate,
+        "daily_refresh_limit": daily_refresh_limit,
+    }
 
 
 def state_is_today(state: dict[str, Any]) -> bool:
@@ -555,10 +570,22 @@ def render_runtime_status(tavily_ready: bool, data_ready: bool) -> None:
 
 def render_source_status(state: dict[str, Any], candidates: list[dict[str, str]]) -> None:
     st.subheader("数据源状态")
+    if state.get("tavily_quota_exceeded"):
+        st.warning("Tavily 今日额度可能已用尽，当前展示上一次缓存结果。")
     coverage = state.get("coverage_report", {}) if isinstance(state.get("coverage_report", {}), dict) else {}
     deduped_rows = load_csv_rows(SEARCH_DEDUPED_PATH)
     high_quality_count = len([row for row in deduped_rows if row.get("结果类型") == "高质量新闻"])
     stock_count = len([row for row in candidates if row.get("候选类型") in {"个股", "个股待补代码"}])
+    render_metric_cards(
+        [
+            ("Tavily Key", "是" if has_tavily_key() else "否", "是否读取到可用 Key", "K"),
+            ("Tavily 超额度", "是" if state.get("tavily_quota_exceeded") else "否", "HTTP 432 会立即停止后续请求", "Q"),
+            ("使用缓存", "是" if state.get("cache_used") else "否", "失败或空结果时保留旧缓存", "C"),
+            ("预计查询数", str(int(state.get("estimated_tavily_queries", 0) or 0)), "热点 + 自选股预计 Tavily query", "E"),
+            ("实际查询数", str(int(state.get("actual_tavily_queries", 0) or 0)), "本轮实际发出的 Tavily query", "A"),
+            ("上次成功刷新", str(state.get("last_successful_refresh_time") or "暂无"), "最近一次成功写入有效数据", "L"),
+        ]
+    )
     render_metric_cards(
         [
             ("Tavily 状态", _tavily_status_text(state), "主搜索源连接情况", "T"),
@@ -570,7 +597,8 @@ def render_source_status(state: dict[str, Any], candidates: list[dict[str, str]]
         ]
     )
     last_error = str(st.session_state.get("last_auto_error", "") or "无")
-    st.caption(f"搜索 query 数量：{int(coverage.get('searched_queries_count') or coverage.get('search_queries_count') or 0)}；保留结果数量：{len([row for row in deduped_rows if row.get('是否保留') == '是'])}；最近一次错误原因：{last_error[:120]}")
+    state_error = str(state.get("last_refresh_error") or state.get("tavily_error_message") or last_error or "无")
+    st.caption(f"搜索 query 数量：{int(coverage.get('searched_queries_count') or coverage.get('search_queries_count') or 0)}；保留结果数量：{len([row for row in deduped_rows if row.get('是否保留') == '是'])}；最近一次错误原因：{state_error[:120]}")
 
     rows = []
     for row in _source_status_table(state):
@@ -620,8 +648,11 @@ def render_refresh_button(key_prefix: str = "main", *, use_container_width: bool
                 progress.progress(98)
                 progress.progress(100)
                 status.update(label=f"今日数据刷新完成，用时 {elapsed:.1f} 秒。", state="complete")
-                _render_refresh_timing(load_state().get("refresh_timing", {}))
-                st.session_state["used_cache"] = False
+                state_after_refresh = load_state()
+                _render_refresh_timing(state_after_refresh.get("refresh_timing", {}))
+                st.session_state["used_cache"] = bool(state_after_refresh.get("cache_used", False))
+                if state_after_refresh.get("tavily_quota_exceeded"):
+                    st.warning("Tavily 今日额度可能已用尽，当前展示上一次缓存结果。")
                 st.session_state["last_refresh_notice"] = f"今日数据刷新完成，用时 {elapsed:.1f} 秒。"
                 st.session_state["show_refresh_timing"] = True
                 st.cache_data.clear()
@@ -662,6 +693,15 @@ def render_secondary_actions(key_prefix: str = "main") -> None:
 def render_actions() -> None:
     render_refresh_button("main")
     render_secondary_actions("main")
+
+
+def _render_tavily_cost_hint() -> None:
+    limits = tavily_refresh_limits()
+    st.caption(
+        f"本次预计消耗 Tavily 查询数：{limits['total_estimate']}；"
+        f"今日建议刷新次数：{limits['daily_refresh_limit']} 次。"
+        "如已超出 Tavily 限额，将直接使用缓存。"
+    )
 
 
 def _render_refresh_timing(timing: object) -> None:
@@ -723,6 +763,7 @@ def render_core_conclusion(
         with st.container(border=True):
             st.markdown("**今日尚未刷新数据。**")
             st.caption("当前展示缓存或自选股基础列表。点击“立即刷新今日数据”后，将检索热点新闻、自选股情报和风险信号。")
+            _render_tavily_cost_hint()
             render_refresh_button("today_empty")
         render_secondary_actions("today_empty")
         return
@@ -738,6 +779,7 @@ def render_core_conclusion(
         f"高质量新闻 {int(state.get('high_quality_news_count', 0) or 0)}",
     ]
     st.caption(" ｜ ".join(summary))
+    _render_tavily_cost_hint()
     cols = st.columns([1, 1, 1, 3])
     with cols[0]:
         render_refresh_button("today")

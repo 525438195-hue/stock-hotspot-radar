@@ -158,6 +158,8 @@ def build_stock_candidates(
     candidates = _merge_duplicate_rows([row for row in candidates if row.get("候选类型") != "占位"])
     candidates.sort(key=_sort_key)
     path = output_dir / "stock_candidates.csv"
+    if not candidates and path.exists():
+        return path
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=CANDIDATE_FIELDS)
         writer.writeheader()

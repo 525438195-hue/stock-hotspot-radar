@@ -14,6 +14,12 @@ SUPPORTED_SECRET_KEYS = [
     "GOOGLE_API_KEY",
     "GOOGLE_CSE_ID",
     "NEWSAPI_KEY",
+    "TAVILY_MAX_QUERIES_PER_RUN",
+    "TAVILY_MAX_RESULTS_PER_QUERY",
+    "WATCHLIST_MAX_STOCKS_PER_RUN",
+    "WATCHLIST_MAX_QUERIES_PER_STOCK",
+    "WATCHLIST_MAX_TOTAL_QUERIES",
+    "TAVILY_DAILY_REFRESH_LIMIT",
 ]
 
 
@@ -60,6 +66,26 @@ def runtime_secret(project_root: Path, key: str, dotenv_values: dict[str, str] |
 def get_secret(key: str, project_root: Path | None = None) -> str:
     root = project_root or Path(__file__).resolve().parents[1]
     return runtime_secret(root, key)
+
+
+def runtime_int(
+    project_root: Path,
+    key: str,
+    default: int,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
+    raw_value = runtime_secret(project_root, key)
+    try:
+        value = int(str(raw_value).strip()) if raw_value else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
 
 
 def runtime_secrets(project_root: Path) -> dict[str, str]:

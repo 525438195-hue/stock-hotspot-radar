@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from result_quality_filter import annotate_results
-from secrets_manager import runtime_secret
+from secrets_manager import runtime_int, runtime_secret
 from source_config import load_source_config
 from text_normalizer import normalize_text_with_flag
 from time_utils import format_publish_time, format_publish_time_iso
@@ -107,12 +107,18 @@ def run_watchlist_monitor(project_root: Path | None = None) -> dict[str, Any]:
     watchlist = load_watchlist(data_dir / "watchlist.csv")
     config = load_source_config(root)
     news_rows: list[dict[str, str]] = []
+    fetch_meta: dict[str, Any] = {}
     if watchlist:
-        news_rows = _fetch_watchlist_news(watchlist, config, root)
+        news_rows, fetch_meta = _fetch_watchlist_news(watchlist, config, root)
+    if fetch_meta.get("preserve_existing_outputs"):
+        metrics = metrics_from_existing_outputs(root)
+        _update_report_state_extra(output_dir, fetch_meta)
+        print("自选股 Tavily 本轮没有新结果，已保留上一次缓存结果。")
+        return metrics
     review_rows = _build_review_rows(watchlist, news_rows)
     _write_csv(output_dir / "watchlist_news.csv", WATCHLIST_NEWS_FIELDS, news_rows)
     _write_csv(output_dir / "watchlist_review.csv", WATCHLIST_REVIEW_FIELDS, review_rows)
-    metrics = update_report_state(output_dir, watchlist, news_rows, review_rows)
+    metrics = update_report_state(output_dir, watchlist, news_rows, review_rows, fetch_meta)
     print(f"自选股情报监控完成：自选股 {len(watchlist)} 只，保留消息 {metrics['watchlist_news_count']} 条。")
     return metrics
 
@@ -122,8 +128,10 @@ def update_report_state(
     watchlist: list[dict[str, str]],
     news_rows: list[dict[str, str]],
     review_rows: list[dict[str, str]],
+    extra_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     retained = [row for row in news_rows if row.get("是否保留") == "是"]
+    extra_metrics = extra_metrics or {}
     metrics = {
         "watchlist_stock_count": len(watchlist),
         "watchlist_news_count": len(retained),
@@ -131,6 +139,13 @@ def update_report_state(
         "watchlist_risk_count": sum(1 for row in review_rows if row.get("情报状态") == "有风险"),
         "watchlist_last_update_time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    metrics.update(
+        {
+            "watchlist_query_limit_applied": bool(extra_metrics.get("watchlist_query_limit_applied", False)),
+            "watchlist_estimated_tavily_queries": int(extra_metrics.get("watchlist_estimated_tavily_queries", 0) or 0),
+            "watchlist_actual_tavily_queries": int(extra_metrics.get("watchlist_actual_tavily_queries", 0) or 0),
+        }
+    )
     state_path = output_dir / "report_state.json"
     state: dict[str, Any] = {}
     if state_path.exists():
@@ -138,6 +153,17 @@ def update_report_state(
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             state = {}
+    hotspot_estimated = int(state.get("hotspot_estimated_tavily_queries", state.get("estimated_tavily_queries", 0)) or 0)
+    hotspot_actual = int(state.get("hotspot_actual_tavily_queries", state.get("actual_tavily_queries", 0)) or 0)
+    metrics["estimated_tavily_queries"] = hotspot_estimated + metrics["watchlist_estimated_tavily_queries"]
+    metrics["actual_tavily_queries"] = hotspot_actual + metrics["watchlist_actual_tavily_queries"]
+    if extra_metrics.get("tavily_quota_exceeded"):
+        metrics["tavily_quota_exceeded"] = True
+        metrics["tavily_error_code"] = extra_metrics.get("tavily_error_code", "432")
+        metrics["tavily_error_message"] = extra_metrics.get("tavily_error_message", "")
+        metrics["cache_used"] = bool(extra_metrics.get("cache_used", state.get("cache_used", False)))
+        metrics["last_refresh_failed"] = True
+        metrics["last_refresh_error"] = extra_metrics.get("tavily_error_message", "")
     state.update(metrics)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -152,25 +178,86 @@ def metrics_from_existing_outputs(project_root: Path | None = None) -> dict[str,
     return update_report_state(root / "outputs", watchlist, news_rows, review_rows)
 
 
+def _update_report_state_extra(output_dir: Path, extra_metrics: dict[str, Any]) -> None:
+    state_path = output_dir / "report_state.json"
+    state: dict[str, Any] = {}
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            state = {}
+    state.update(
+        {
+            "watchlist_query_limit_applied": bool(extra_metrics.get("watchlist_query_limit_applied", False)),
+            "watchlist_estimated_tavily_queries": int(extra_metrics.get("watchlist_estimated_tavily_queries", 0) or 0),
+            "watchlist_actual_tavily_queries": int(extra_metrics.get("watchlist_actual_tavily_queries", 0) or 0),
+            "cache_used": bool(extra_metrics.get("cache_used", state.get("cache_used", False))),
+        }
+    )
+    hotspot_estimated = int(state.get("hotspot_estimated_tavily_queries", state.get("estimated_tavily_queries", 0)) or 0)
+    hotspot_actual = int(state.get("hotspot_actual_tavily_queries", state.get("actual_tavily_queries", 0)) or 0)
+    state["estimated_tavily_queries"] = hotspot_estimated + int(state.get("watchlist_estimated_tavily_queries", 0) or 0)
+    state["actual_tavily_queries"] = hotspot_actual + int(state.get("watchlist_actual_tavily_queries", 0) or 0)
+    if extra_metrics.get("tavily_quota_exceeded"):
+        state.update(
+            {
+                "tavily_quota_exceeded": True,
+                "tavily_error_code": extra_metrics.get("tavily_error_code", "432"),
+                "tavily_error_message": extra_metrics.get("tavily_error_message", ""),
+                "last_refresh_failed": True,
+                "last_refresh_error": extra_metrics.get("tavily_error_message", ""),
+            }
+        )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _fetch_watchlist_news(
     watchlist: list[dict[str, str]],
     config: dict[str, Any],
     project_root: Path,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    max_stocks = runtime_int(project_root, "WATCHLIST_MAX_STOCKS_PER_RUN", 3, min_value=1, max_value=3)
+    max_queries_per_stock = runtime_int(project_root, "WATCHLIST_MAX_QUERIES_PER_STOCK", 2, min_value=1, max_value=2)
+    max_total_queries = runtime_int(project_root, "WATCHLIST_MAX_TOTAL_QUERIES", 6, min_value=1, max_value=6)
+    limited_watchlist = watchlist[:max_stocks]
+    estimated_queries = min(len(limited_watchlist) * max_queries_per_stock, max_total_queries)
+    meta: dict[str, Any] = {
+        "watchlist_query_limit_applied": len(watchlist) > len(limited_watchlist),
+        "watchlist_estimated_tavily_queries": estimated_queries,
+        "watchlist_actual_tavily_queries": 0,
+        "tavily_quota_exceeded": False,
+        "tavily_error_code": "",
+        "tavily_error_message": "",
+        "cache_used": False,
+        "preserve_existing_outputs": False,
+    }
     api_key = runtime_secret(project_root, "TAVILY_API_KEY")
     if not api_key:
         print("跳过自选股 Tavily：未配置 TAVILY_API_KEY。")
-        return []
+        meta["tavily_error_message"] = "未配置 TAVILY_API_KEY"
+        meta["preserve_existing_outputs"] = _watchlist_cache_exists(project_root)
+        meta["cache_used"] = bool(meta["preserve_existing_outputs"])
+        return [], meta
     raw_results: list[dict[str, Any]] = []
     query_count = 0
-    for stock in watchlist:
-        for query in _stock_queries(stock)[:8]:
-            if query_count >= 60:
+    stop_tavily = False
+    for stock in limited_watchlist:
+        for query in _stock_queries(stock)[:max_queries_per_stock]:
+            if query_count >= max_total_queries:
                 break
             query_count += 1
+            meta["watchlist_actual_tavily_queries"] = query_count
             print(f"正在抓取：自选股 Tavily - {query}")
-            raw_results.extend(_fetch_tavily_query(api_key, query, stock, config))
-        if query_count >= 60:
+            result = _fetch_tavily_query(api_key, query, stock, config)
+            if result.get("quota_exceeded"):
+                meta["tavily_quota_exceeded"] = True
+                meta["tavily_error_code"] = result.get("error_code", "432")
+                meta["tavily_error_message"] = result.get("error_message", "Tavily 今日额度可能已用尽")
+                stop_tavily = True
+                break
+            raw_results.extend(result.get("items", []))
+        if query_count >= max_total_queries or stop_tavily:
             break
     annotated = annotate_results(
         raw_results,
@@ -178,10 +265,16 @@ def _fetch_watchlist_news(
         exclude_domains=_tavily_domains(config, "exclude_domains"),
     )
     deduped = _dedupe_news(annotated)
-    return [_news_csv_row(result) for result in deduped]
+    rows = [_news_csv_row(result) for result in deduped]
+    if not rows and _watchlist_cache_exists(project_root):
+        meta["preserve_existing_outputs"] = True
+        meta["cache_used"] = True
+    if len(watchlist) > len(limited_watchlist) or estimated_queries < len(watchlist) * max_queries_per_stock:
+        meta["watchlist_query_limit_applied"] = True
+    return rows, meta
 
 
-def _fetch_tavily_query(api_key: str, query: str, stock: dict[str, str], config: dict[str, Any]) -> list[dict[str, Any]]:
+def _fetch_tavily_query(api_key: str, query: str, stock: dict[str, str], config: dict[str, Any]) -> dict[str, Any]:
     import requests  # type: ignore
 
     body = {
@@ -214,10 +307,14 @@ def _fetch_tavily_query(api_key: str, query: str, stock: dict[str, str], config:
                 json=body,
                 timeout=15,
             )
+        if _is_tavily_quota_response(response):
+            message = _tavily_quota_message(response)
+            print(f"自选股 Tavily 额度保护：{message}")
+            return {"items": [], "quota_exceeded": True, "error_code": "432", "error_message": message}
         response.raise_for_status()
     except Exception as exc:
         print(f"自选股 Tavily 失败：{query}，原因 {type(exc).__name__}: {exc}")
-        return []
+        return {"items": [], "quota_exceeded": False, "error_code": "", "error_message": f"{type(exc).__name__}: {exc}"}
     payload = response.json()
     rows = []
     for item in payload.get("results", []):
@@ -225,7 +322,25 @@ def _fetch_tavily_query(api_key: str, query: str, stock: dict[str, str], config:
             continue
         rows.append(_normalize_result(item, query, stock))
     print(f"自选股 Tavily 成功：{query} 获取 {len(rows)} 条")
-    return rows
+    return {"items": rows, "quota_exceeded": False, "error_code": "", "error_message": ""}
+
+
+def _watchlist_cache_exists(project_root: Path) -> bool:
+    output_dir = project_root / "outputs"
+    return (output_dir / "watchlist_news.csv").exists() and (output_dir / "watchlist_review.csv").exists()
+
+
+def _is_tavily_quota_response(response: Any) -> bool:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    text = str(getattr(response, "text", "") or "")
+    return status_code == 432 or "This request exceeds your plan's set usage limit" in text
+
+
+def _tavily_quota_message(response: Any) -> str:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    text = str(getattr(response, "text", "") or "").replace("\n", " ").replace("\r", " ").strip()
+    preview = text[:300] if text else "无返回正文"
+    return f"Tavily 今日额度可能已用尽；状态码 {status_code or 432}；返回正文 {preview}"
 
 
 def _normalize_result(item: dict[str, Any], query: str, stock: dict[str, str]) -> dict[str, Any]:
